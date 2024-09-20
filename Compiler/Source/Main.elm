@@ -1,4 +1,4 @@
-module Main exposing (run)
+module Main exposing (Id(..), Token(..), run, tokenize)
 
 import BackendTask exposing (BackendTask)
 import BackendTask.File as File
@@ -29,26 +29,30 @@ type Tokenizer e a
 
 
 type Token
-    = T_Number Int Int Int
-    | T_Illegal Int Int String
+    = Token Int Id
+
+
+type Id
+    = T_Number Int
+    | T_Illegal String
 
 
 tokenize : String -> List Token
 tokenize string =
-    String.foldr (::) [] string |> t [] 1 1 string
+    String.foldr (::) [] string |> t [] 1 string
 
 
-t : List Token -> Int -> Int -> String -> List Char -> List Token
-t acc i j src remaining =
+t : List Token -> Int -> String -> List Char -> List Token
+t acc i src remaining =
     case remaining of
         [] ->
-            acc
+            reverseTo [] acc
 
         '\n' :: xs ->
-            t acc 1 (j + 1) src xs
+            t acc (i + 1) src xs
 
         ' ' :: xs ->
-            t acc (i + 1) j src xs
+            t acc (i + 1) src xs
 
         x :: xs ->
             let
@@ -62,9 +66,9 @@ t acc i j src remaining =
                         let
                             newAcc : List Token
                             newAcc =
-                                T_Number i j parsed.value :: acc
+                                Token i (T_Number parsed.value) :: acc
                         in
-                        t newAcc (i + parsed.length) j src rest
+                        t newAcc (i + parsed.length) src rest
 
                     Stop length ->
                         let
@@ -72,7 +76,7 @@ t acc i j src remaining =
                             illegalToken =
                                 String.slice i (i + length) src
                         in
-                        stop i j illegalToken acc
+                        stop i illegalToken acc
 
             else
                 let
@@ -84,7 +88,7 @@ t acc i j src remaining =
                     token =
                         String.slice i (i + length) src
                 in
-                stop i j token acc
+                stop i token acc
 
 
 integer :
@@ -127,9 +131,9 @@ parseIllegal i chars =
                 parseIllegal (i + 1) xs
 
 
-stop : Int -> Int -> String -> List Token -> List Token
-stop i j str acc =
-    reverseTo [ T_Illegal i j str ] acc
+stop : Int -> String -> List Token -> List Token
+stop i str acc =
+    reverseTo [ Token i (T_Illegal str) ] acc
 
 
 reverseTo : List a -> List a -> List a

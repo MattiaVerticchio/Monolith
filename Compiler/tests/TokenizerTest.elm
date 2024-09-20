@@ -1,0 +1,91 @@
+module TokenizerTest exposing (..)
+
+import Expect
+import Fuzz exposing (Fuzzer)
+import Main exposing (Id(..), Token(..))
+import Test exposing (Test)
+
+
+suite : Test
+suite =
+    Test.fuzz tokens "Generate and tokenize random values" <|
+        \generated ->
+            let
+                rendered : String
+                rendered =
+                    listToString generated
+            in
+            Main.tokenize rendered
+                |> Expect.equal generated
+
+
+listToString : List Token -> String
+listToString list =
+    case list of
+        [] ->
+            ""
+
+        (Token _ tokenId) :: xs ->
+            listToStringHelp (toString tokenId) xs
+
+
+listToStringHelp : String -> List Token -> String
+listToStringHelp acc list =
+    case list of
+        [] ->
+            acc
+
+        (Token _ tokenId) :: xs ->
+            listToStringHelp (acc ++ " " ++ toString tokenId) xs
+
+
+tokens : Fuzzer (List Token)
+tokens =
+    Fuzz.list id |> Fuzz.map (idsToTokens 1 [])
+
+
+idsToTokens : Int -> List Token -> List Id -> List Token
+idsToTokens i acc remaining =
+    case remaining of
+        [] ->
+            List.reverse acc
+
+        token :: rest ->
+            let
+                length : Int
+                length =
+                    tokenLength token
+            in
+            idsToTokens (i + length + 1) (Token i token :: acc) rest
+
+
+tokenLength : Id -> Int
+tokenLength token =
+    case token of
+        T_Number n ->
+            String.fromInt n |> String.length
+
+        T_Illegal str ->
+            String.length str
+
+
+id : Fuzzer Id
+id =
+    Fuzz.oneOf
+        [ Fuzz.map T_Number <| Fuzz.intRange 0 max
+        ]
+
+
+toString : Id -> String
+toString t =
+    case t of
+        T_Number n ->
+            String.fromInt n
+
+        T_Illegal str ->
+            str
+
+
+max : Int
+max =
+    2147483647
