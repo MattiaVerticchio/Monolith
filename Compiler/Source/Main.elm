@@ -34,12 +34,13 @@ type Token
 
 type Id
     = T_Number Int
+    | T_Lowercase String
     | T_Illegal String
 
 
 tokenize : String -> List Token
 tokenize string =
-    String.foldr (::) [] string |> t [] 1 string
+    String.foldr (::) [] string |> t [] 0 string
 
 
 t : List Token -> Int -> String -> List Char -> List Token
@@ -60,7 +61,29 @@ t acc i src remaining =
                 code =
                     Char.toCode x
             in
-            if isDigit code then
+            if isLowercase code then
+                case lowercase 1 xs of
+                    Continue length rest ->
+                        let
+                            newI : Int
+                            newI =
+                                i + length
+
+                            chunk : String
+                            chunk =
+                                String.slice i newI src
+                        in
+                        t (Token i (T_Lowercase chunk) :: acc) newI src rest
+
+                    Stop length ->
+                        let
+                            id : String
+                            id =
+                                String.slice i (i + length) src
+                        in
+                        stop i id acc
+
+            else if isDigit code then
                 case integer (code - 0x30) 1 xs of
                     Continue parsed rest ->
                         let
@@ -89,6 +112,28 @@ t acc i src remaining =
                         String.slice i (i + length) src
                 in
                 stop i token acc
+
+
+lowercase : Int -> List Char -> Tokenizer Int Int
+lowercase length characters =
+    case characters of
+        [] ->
+            Continue length characters
+
+        x :: xs ->
+            let
+                code : Int
+                code =
+                    Char.toCode x
+            in
+            if isAlphanumeric code then
+                lowercase (length + 1) xs
+
+            else if isBreaking x then
+                Continue length characters
+
+            else
+                parseIllegal (length + 1) xs |> Stop
 
 
 integer :
@@ -148,6 +193,18 @@ reverseTo acc remaining =
 
 
 -- Helpers
+
+
+isAlphanumeric : Int -> Bool
+isAlphanumeric code =
+    (0x61 <= code && code <= 0x7A)
+        || (code <= 0x5A && 0x41 <= code)
+        || (code <= 0x39 && 0x30 <= code)
+
+
+isLowercase : Int -> Bool
+isLowercase code =
+    0x61 <= code && code <= 0x7A
 
 
 isDigit : Int -> Bool
