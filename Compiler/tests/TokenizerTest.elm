@@ -71,12 +71,16 @@ tokenLength token =
         T_Lowercase str ->
             String.length str
 
+        T_Equal ->
+            1
+
 
 id : Fuzzer Id
 id =
     Fuzz.oneOf
         [ Fuzz.map T_Number <| Fuzz.intRange 0 max
         , Fuzz.map T_Lowercase lowercaseWord
+        , Fuzz.constant T_Equal
         ]
 
 
@@ -91,6 +95,9 @@ toString t =
 
         T_Lowercase str ->
             str
+
+        T_Equal ->
+            "="
 
 
 max : Int

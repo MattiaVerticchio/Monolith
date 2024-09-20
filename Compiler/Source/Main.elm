@@ -35,6 +35,7 @@ type Token
 type Id
     = T_Number Int
     | T_Lowercase String
+    | T_Equal
     | T_Illegal String
 
 
@@ -54,6 +55,9 @@ t acc i src remaining =
 
         ' ' :: xs ->
             t acc (i + 1) src xs
+
+        '=' :: xs ->
+            t (Token i T_Equal :: acc) (i + 1) src xs
 
         x :: xs ->
             let
