@@ -2,6 +2,7 @@ module Main exposing (Id(..), Token(..), run, tokenize)
 
 import BackendTask exposing (BackendTask)
 import BackendTask.File as File
+import BackendTask.Stream exposing (Error)
 import FatalError exposing (FatalError)
 import Pages.Script as Script exposing (Script)
 
@@ -16,11 +17,12 @@ compile =
     File.rawFile "test.🗿"
         |> BackendTask.allowFatal
         |> BackendTask.map tokenize
+        |> BackendTask.andThen parseFile
         |> BackendTask.andThen (Debug.toString >> Script.log)
 
 
 
--- Tokenization
+-- Tokenize
 
 
 type Tokenizer e a
@@ -313,3 +315,93 @@ getIndentHelp acc characters =
 
         rest ->
             ( acc, rest )
+
+
+
+-- Parse
+
+
+type Parser e a
+    = Error e
+    | Parsed a (List Token)
+
+
+type alias File =
+    List Declaration
+
+
+type alias Declaration =
+    { name : String
+    , expression : Expression
+    , start : Int
+    }
+
+
+type DeclarationParsingError
+    = WrongDeclarationSyntax
+    | UnexpectedExpression
+
+
+type Expression
+    = Number Int Int
+
+
+parseFile : List Token -> BackendTask FatalError File
+parseFile tokens =
+    case parseDeclarations tokens of
+        Parsed file _ ->
+            BackendTask.succeed file
+
+        Error e ->
+            errorToString e
+                |> FatalError.fromString
+                |> BackendTask.fail
+
+
+parseDeclarations : List Token -> Parser DeclarationParsingError (List Declaration)
+parseDeclarations tokens =
+    parseDeclarationsHelp [] tokens
+
+
+parseDeclarationsHelp : List Declaration -> List Token -> Parser DeclarationParsingError (List Declaration)
+parseDeclarationsHelp acc tokens =
+    case tokens of
+        [] ->
+            Parsed (List.reverse acc) []
+
+        [ Token _ (T_Indent _) ] ->
+            Parsed (List.reverse acc) []
+
+        (Token _ (T_Indent _)) :: (((Token _ (T_Indent _)) :: _) as rest) ->
+            parseDeclarationsHelp acc rest
+
+        (Token _ (T_Indent 0)) :: (Token start (T_Lowercase str)) :: (Token _ T_Equal) :: rest ->
+            case parseExpression rest of
+                Parsed exp afterExp ->
+                    parseDeclarationsHelp (Declaration str exp start :: acc) afterExp
+
+                Error e ->
+                    Error e
+
+        (Token _ _) :: _ ->
+            Error WrongDeclarationSyntax
+
+
+parseExpression : List Token -> Parser DeclarationParsingError Expression
+parseExpression tokens =
+    case tokens of
+        (Token i (T_Number n)) :: rest ->
+            Parsed (Number i n) rest
+
+        _ ->
+            Error UnexpectedExpression
+
+
+errorToString : DeclarationParsingError -> String
+errorToString error =
+    case error of
+        WrongDeclarationSyntax ->
+            "Wrong declaration syntax"
+
+        UnexpectedExpression ->
+            "Unexpected expression"
