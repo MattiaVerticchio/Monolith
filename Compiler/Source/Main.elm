@@ -36,12 +36,20 @@ type Id
     = T_Number Int
     | T_Lowercase String
     | T_Equal
+    | T_Indent Int
     | T_Illegal String
 
 
 tokenize : String -> List Token
 tokenize string =
-    String.foldr (::) [] string |> t [] 0 string
+    let
+        characters =
+            String.foldr (::) [] string
+
+        ( indent, afterIndent ) =
+            getIndent characters
+    in
+    t [ Token 0 (T_Indent indent) ] 0 string afterIndent
 
 
 t : List Token -> Int -> String -> List Char -> List Token
@@ -51,7 +59,15 @@ t acc i src remaining =
             reverseTo [] acc
 
         '\n' :: xs ->
-            t acc (i + 1) src xs
+            let
+                ( indent, afterIndent ) =
+                    getIndent xs
+
+                token : Token
+                token =
+                    Token (i + 1) (T_Indent indent)
+            in
+            t (token :: acc) (i + 1 + indent) src afterIndent
 
         ' ' :: xs ->
             t acc (i + 1) src xs
@@ -278,3 +294,22 @@ isBreaking x =
 
         _ ->
             False
+
+
+
+-- Count the number of leading spaces, also returning the characters after
+
+
+getIndent : List Char -> ( Int, List Char )
+getIndent characters =
+    getIndentHelp 0 characters
+
+
+getIndentHelp : Int -> List Char -> ( Int, List Char )
+getIndentHelp acc characters =
+    case characters of
+        ' ' :: rest ->
+            getIndentHelp (acc + 1) rest
+
+        rest ->
+            ( acc, rest )

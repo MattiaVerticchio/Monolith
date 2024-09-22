@@ -16,6 +16,8 @@ suite =
                     listToString generated
             in
             Main.tokenize rendered
+                -- Drop the first indent for now
+                |> List.drop 1
                 |> Expect.equal generated
 
 
@@ -74,6 +76,9 @@ tokenLength token =
         T_Equal ->
             1
 
+        T_Indent indent ->
+            indent + 1
+
 
 id : Fuzzer Id
 id =
@@ -98,6 +103,9 @@ toString t =
 
         T_Equal ->
             "="
+
+        T_Indent indent ->
+            "\n" ++ String.repeat indent " "
 
 
 max : Int
