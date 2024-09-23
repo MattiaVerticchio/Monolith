@@ -1,6 +1,6 @@
 module Main exposing (Id(..), Token(..), run, tokenize)
 
-import BackendTask exposing (BackendTask)
+import BackendTask as Task exposing (BackendTask)
 import BackendTask.File as File
 import BackendTask.Stream exposing (Error)
 import FatalError exposing (FatalError)
@@ -15,10 +15,11 @@ run =
 compile : BackendTask FatalError ()
 compile =
     File.rawFile "test.🗿"
-        |> BackendTask.allowFatal
-        |> BackendTask.map tokenize
-        |> BackendTask.andThen parseFile
-        |> BackendTask.andThen (Debug.toString >> Script.log)
+        |> Task.allowFatal
+        |> Task.map tokenize
+        |> Task.andThen parseFile
+        |> Task.map fileToString
+        |> Task.andThen Script.log
 
 
 
@@ -327,6 +328,7 @@ type Parser e a
 
 
 type alias File =
+    -- The list is reversed
     List Declaration
 
 
@@ -339,23 +341,28 @@ type alias Declaration =
 
 type DeclarationParsingError
     = WrongDeclarationSyntax
-    | UnexpectedExpression
+    | ExpressionParsingError Int String ExpressionParsingError
 
 
 type Expression
     = Number Int Int
 
 
+type ExpressionParsingError
+    = UnexpectedTokenForExpression Int Id
+    | EndOfFileDuringExpression
+
+
 parseFile : List Token -> BackendTask FatalError File
 parseFile tokens =
     case parseDeclarations tokens of
         Parsed file _ ->
-            BackendTask.succeed file
+            Task.succeed file
 
         Error e ->
             errorToString e
                 |> FatalError.fromString
-                |> BackendTask.fail
+                |> Task.fail
 
 
 parseDeclarations : List Token -> Parser DeclarationParsingError (List Declaration)
@@ -367,10 +374,10 @@ parseDeclarationsHelp : List Declaration -> List Token -> Parser DeclarationPars
 parseDeclarationsHelp acc tokens =
     case tokens of
         [] ->
-            Parsed (List.reverse acc) []
+            Parsed acc []
 
         [ Token _ (T_Indent _) ] ->
-            Parsed (List.reverse acc) []
+            Parsed acc []
 
         (Token _ (T_Indent _)) :: (((Token _ (T_Indent _)) :: _) as rest) ->
             parseDeclarationsHelp acc rest
@@ -381,20 +388,48 @@ parseDeclarationsHelp acc tokens =
                     parseDeclarationsHelp (Declaration str exp start :: acc) afterExp
 
                 Error e ->
-                    Error e
+                    ExpressionParsingError start str e |> Error
 
         (Token _ _) :: _ ->
             Error WrongDeclarationSyntax
 
 
-parseExpression : List Token -> Parser DeclarationParsingError Expression
+parseExpression : List Token -> Parser ExpressionParsingError Expression
 parseExpression tokens =
     case tokens of
         (Token i (T_Number n)) :: rest ->
             Parsed (Number i n) rest
 
-        _ ->
-            Error UnexpectedExpression
+        (Token i unexpected) :: _ ->
+            UnexpectedTokenForExpression i unexpected |> Error
+
+        [] ->
+            Error EndOfFileDuringExpression
+
+
+
+-- Format
+
+
+fileToString : File -> String
+fileToString file =
+    List.map declarationToString file |> String.join "\n\n"
+
+
+declarationToString : Declaration -> String
+declarationToString declaration =
+    declaration.name ++ " = " ++ expressionToString declaration.expression
+
+
+expressionToString : Expression -> String
+expressionToString expression =
+    case expression of
+        Number _ n ->
+            String.fromInt n
+
+
+
+-- Error messages
 
 
 errorToString : DeclarationParsingError -> String
@@ -403,5 +438,37 @@ errorToString error =
         WrongDeclarationSyntax ->
             "Wrong declaration syntax"
 
-        UnexpectedExpression ->
-            "Unexpected expression"
+        ExpressionParsingError _ str e ->
+            "I’m trying to parse "
+                ++ str
+                ++ " but I have a problem. "
+                ++ expressionParsingErrorToString e
+
+
+expressionParsingErrorToString : ExpressionParsingError -> String
+expressionParsingErrorToString error =
+    case error of
+        EndOfFileDuringExpression ->
+            "The file ended."
+
+        UnexpectedTokenForExpression _ token ->
+            "I encountered " ++ describeToken token
+
+
+describeToken : Id -> String
+describeToken id =
+    case id of
+        T_Number n ->
+            "the number " ++ String.fromInt n
+
+        T_Lowercase str ->
+            "the word " ++ str
+
+        T_Equal ->
+            "the symbol ="
+
+        T_Indent n ->
+            "an indentation of " ++ String.fromInt n ++ " spaces"
+
+        T_Illegal str ->
+            "something weird: " ++ str
