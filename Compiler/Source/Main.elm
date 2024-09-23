@@ -20,7 +20,7 @@ compile =
     readFolder "src"
         |> Task.andThen readAndParseFiles
         |> Task.andThen
-            (List.map fileToString >> String.join "\n" >> Script.log)
+            (List.map (fileToJs >> jsFileToString) >> String.join "\n" >> Script.log)
 
 
 type alias Dirent =
@@ -40,11 +40,15 @@ filterFiles : List Dirent -> List String
 filterFiles =
     List.filterMap <|
         \dirent ->
-            if String.endsWith ".🗿" dirent.name then
+            if String.endsWith extension dirent.name then
                 dirent.parentPath ++ "/" ++ dirent.name |> Just
 
             else
                 Nothing
+
+
+extension =
+    ".🗿"
 
 
 decodeDirent : Decoder Dirent
@@ -60,10 +64,30 @@ readAndParseFiles paths =
 
 
 readAndParseFile : String -> BackendTask FatalError File
-readAndParseFile source =
-    File.rawFile source
+readAndParseFile path =
+    let
+        name =
+            String.split "/" path
+                |> lastElement
+                |> Maybe.withDefault ""
+                |> String.dropRight (String.length extension)
+    in
+    File.rawFile path
         |> Task.allowFatal
-        |> Task.andThen (tokenize >> parseFile)
+        |> Task.andThen (tokenize >> parseFile name)
+
+
+lastElement : List a -> Maybe a
+lastElement list =
+    case list of
+        [] ->
+            Nothing
+
+        [ x ] ->
+            Just x
+
+        _ :: xs ->
+            lastElement xs
 
 
 
@@ -372,8 +396,11 @@ type Parser e a
 
 
 type alias File =
-    -- The list is reversed
-    List Declaration
+    { name : String
+    , declarations :
+        -- The list is reversed
+        List Declaration
+    }
 
 
 type alias Declaration =
@@ -397,11 +424,11 @@ type ExpressionParsingError
     | EndOfFileDuringExpression
 
 
-parseFile : List Token -> BackendTask FatalError File
-parseFile tokens =
+parseFile : String -> List Token -> BackendTask FatalError File
+parseFile name tokens =
     case parseDeclarations tokens of
-        Parsed file _ ->
-            Task.succeed file
+        Parsed declarations _ ->
+            File name declarations |> Task.succeed
 
         Error e ->
             errorToString e
@@ -452,12 +479,45 @@ parseExpression tokens =
 
 
 
+-- Rendering
+
+
+type alias JsDeclaration =
+    { name : String
+    , expression : JsExpression
+    }
+
+
+type JsExpression
+    = JsNumber Int
+
+
+fileToJs : File -> List JsDeclaration
+fileToJs =
+    .declarations >> List.map declarationToJs
+
+
+declarationToJs : Declaration -> JsDeclaration
+declarationToJs declaration =
+    { name = declaration.name
+    , expression = expressionToJs declaration.expression
+    }
+
+
+expressionToJs : Expression -> JsExpression
+expressionToJs expression =
+    case expression of
+        Number _ n ->
+            JsNumber n
+
+
+
 -- Format
 
 
 fileToString : File -> String
 fileToString file =
-    List.map declarationToString file |> String.join "\n\n"
+    List.map declarationToString file.declarations |> String.join "\n\n"
 
 
 declarationToString : Declaration -> String
@@ -469,6 +529,26 @@ expressionToString : Expression -> String
 expressionToString expression =
     case expression of
         Number _ n ->
+            String.fromInt n
+
+
+jsFileToString : List JsDeclaration -> String
+jsFileToString =
+    List.map jsDeclarationToString >> String.join "\n\n"
+
+
+jsDeclarationToString : JsDeclaration -> String
+jsDeclarationToString declaration =
+    "const "
+        ++ declaration.name
+        ++ " = \n    "
+        ++ jsExpressionToString declaration.expression
+
+
+jsExpressionToString : JsExpression -> String
+jsExpressionToString expression =
+    case expression of
+        JsNumber n ->
             String.fromInt n
 
 
