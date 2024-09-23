@@ -1,9 +1,12 @@
 module Main exposing (Id(..), Token(..), run, tokenize)
 
 import BackendTask as Task exposing (BackendTask)
+import BackendTask.Custom as Custom
 import BackendTask.File as File
 import BackendTask.Stream exposing (Error)
 import FatalError exposing (FatalError)
+import Json.Decode as Decode exposing (Decoder)
+import Json.Encode as Encode
 import Pages.Script as Script exposing (Script)
 
 
@@ -14,12 +17,53 @@ run =
 
 compile : BackendTask FatalError ()
 compile =
-    File.rawFile "test.🗿"
+    readFolder "src"
+        |> Task.andThen readAndParseFiles
+        |> Task.andThen
+            (List.map fileToString >> String.join "\n" >> Script.log)
+
+
+type alias Dirent =
+    { name : String
+    , parentPath : String
+    }
+
+
+readFolder : String -> BackendTask FatalError (List String)
+readFolder path =
+    Custom.run "readFolder" (Encode.string path) (Decode.list decodeDirent)
+        |> Task.map filterFiles
         |> Task.allowFatal
-        |> Task.map tokenize
-        |> Task.andThen parseFile
-        |> Task.map fileToString
-        |> Task.andThen Script.log
+
+
+filterFiles : List Dirent -> List String
+filterFiles =
+    List.filterMap <|
+        \dirent ->
+            if String.endsWith ".🗿" dirent.name then
+                dirent.parentPath ++ "/" ++ dirent.name |> Just
+
+            else
+                Nothing
+
+
+decodeDirent : Decoder Dirent
+decodeDirent =
+    Decode.map2 Dirent
+        (Decode.field "name" Decode.string)
+        (Decode.field "parentPath" Decode.string)
+
+
+readAndParseFiles : List String -> BackendTask FatalError (List File)
+readAndParseFiles paths =
+    List.map readAndParseFile paths |> Task.combine
+
+
+readAndParseFile : String -> BackendTask FatalError File
+readAndParseFile source =
+    File.rawFile source
+        |> Task.allowFatal
+        |> Task.andThen (tokenize >> parseFile)
 
 
 
