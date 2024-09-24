@@ -2,7 +2,7 @@ module TokenizerTest exposing (..)
 
 import Expect
 import Fuzz exposing (Fuzzer)
-import Main exposing (Id(..), Token(..))
+import Main exposing (Id(..), Token, tokenize)
 import Test exposing (Test)
 
 
@@ -15,7 +15,7 @@ suite =
                 rendered =
                     listToString generated
             in
-            Main.tokenize rendered
+            tokenize rendered
                 -- Drop the first indent for now
                 |> List.drop 1
                 |> Expect.equal generated
@@ -27,8 +27,14 @@ listToString list =
         [] ->
             ""
 
-        (Token _ tokenId) :: xs ->
-            listToStringHelp (toString tokenId) xs
+        ( n, (T_Indent _) as tokenId ) :: rest ->
+            listToStringHelp (String.repeat n " " ++ toString tokenId) rest
+
+        [ ( n, tokenId ) ] ->
+            String.repeat n " " ++ toString tokenId
+
+        ( n, tokenId ) :: xs ->
+            listToStringHelp (String.repeat n " " ++ toString tokenId ++ " ") xs
 
 
 listToStringHelp : String -> List Token -> String
@@ -37,8 +43,11 @@ listToStringHelp acc list =
         [] ->
             acc
 
-        (Token _ tokenId) :: xs ->
-            listToStringHelp (acc ++ " " ++ toString tokenId) xs
+        ( _, (T_Indent _) as tokenId ) :: xs ->
+            listToStringHelp (acc ++ toString tokenId) xs
+
+        ( _, tokenId ) :: xs ->
+            listToStringHelp (acc ++ toString tokenId ++ " ") xs
 
 
 tokens : Fuzzer (List Token)
@@ -57,8 +66,17 @@ idsToTokens i acc remaining =
                 length : Int
                 length =
                     tokenLength token
+
+                position : Int
+                position =
+                    case token of
+                        T_Indent _ ->
+                            i + 1
+
+                        _ ->
+                            i
             in
-            idsToTokens (i + length + 1) (Token i token :: acc) rest
+            idsToTokens (i + length + 1) (( position, token ) :: acc) rest
 
 
 tokenLength : Id -> Int
@@ -79,14 +97,66 @@ tokenLength token =
         T_Indent indent ->
             indent + 1
 
+        T_Uppercase str ->
+            String.length str
+
+        T_Export ->
+            6
+
+        T_Import ->
+            6
+
 
 id : Fuzzer Id
 id =
     Fuzz.oneOf
-        [ Fuzz.map T_Number <| Fuzz.intRange 0 max
+        [ Fuzz.map T_Number positiveInt
         , Fuzz.map T_Lowercase lowercaseWord
+        , Fuzz.map T_Uppercase uppercaseWord
         , Fuzz.constant T_Equal
+        , Fuzz.constant T_Import
+        , Fuzz.constant T_Export
         ]
+
+
+positiveInt : Fuzzer Int
+positiveInt =
+    Fuzz.intRange 0 max
+
+
+rendering : Test
+rendering =
+    Test.fuzz id "Rendering tests" <|
+        \t ->
+            let
+                rendered : String
+                rendered =
+                    case t of
+                        T_Number n ->
+                            String.fromInt n
+
+                        T_Lowercase str ->
+                            str
+
+                        T_Uppercase str ->
+                            str
+
+                        T_Equal ->
+                            "="
+
+                        T_Export ->
+                            "export"
+
+                        T_Import ->
+                            "import"
+
+                        T_Indent n ->
+                            "\n" ++ String.repeat n " "
+
+                        T_Illegal str ->
+                            str
+            in
+            Expect.equal rendered (toString t)
 
 
 toString : Id -> String
@@ -107,10 +177,24 @@ toString t =
         T_Indent indent ->
             "\n" ++ String.repeat indent " "
 
+        T_Uppercase str ->
+            str
+
+        T_Export ->
+            "export"
+
+        T_Import ->
+            "import"
+
 
 max : Int
 max =
     2147483647
+
+
+uppercaseWord : Fuzzer String
+uppercaseWord =
+    Fuzz.map2 String.cons uppercaseChar alphaNum
 
 
 lowercaseWord : Fuzzer String

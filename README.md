@@ -2,9 +2,32 @@
 
 ## Language reference
 
-### Top level declarations
+### Exports
 
-Top level declarations have this syntax, with no indentation.
+```
+export
+    add
+    subtract
+    reverse
+    map
+    filter
+```
+
+### Imports
+
+```
+import
+    Math
+        add
+        subtract
+    String
+        capitalize
+    HashMap
+        insert
+        get
+```
+
+### Top level declarations
 
 ```
 number = 420

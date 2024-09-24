@@ -1,4 +1,4 @@
-module Main exposing (Id(..), Token(..), run, tokenize)
+module Main exposing (Id(..), Token, run, tokenize)
 
 import BackendTask as Task exposing (BackendTask)
 import BackendTask.Custom as Custom
@@ -47,6 +47,7 @@ filterFiles =
                 Nothing
 
 
+extension : String
 extension =
     ".🗿"
 
@@ -66,6 +67,7 @@ readAndParseFiles paths =
 readAndParseFile : String -> BackendTask FatalError File
 readAndParseFile path =
     let
+        name : String
         name =
             String.split "/" path
                 |> lastElement
@@ -99,14 +101,17 @@ type Tokenizer e a
     | Stop e
 
 
-type Token
-    = Token Int Id
+type alias Token =
+    ( Int, Id )
 
 
 type Id
     = T_Number Int
     | T_Lowercase String
+    | T_Uppercase String
     | T_Equal
+    | T_Export
+    | T_Import
     | T_Indent Int
     | T_Illegal String
 
@@ -114,13 +119,14 @@ type Id
 tokenize : String -> List Token
 tokenize string =
     let
+        characters : List Char
         characters =
             String.foldr (::) [] string
 
         ( indent, afterIndent ) =
             getIndent characters
     in
-    t [ Token 0 (T_Indent indent) ] 0 string afterIndent
+    t [ ( 0, T_Indent indent ) ] indent string afterIndent
 
 
 t : List Token -> Int -> String -> List Char -> List Token
@@ -134,17 +140,25 @@ t acc i src remaining =
                 ( indent, afterIndent ) =
                     getIndent xs
 
+                afterNewline : Int
+                afterNewline =
+                    i + 1
+
                 token : Token
                 token =
-                    Token (i + 1) (T_Indent indent)
+                    ( afterNewline, T_Indent indent )
+
+                afterSpace : Int
+                afterSpace =
+                    afterNewline + indent
             in
-            t (token :: acc) (i + 1 + indent) src afterIndent
+            t (token :: acc) afterSpace src afterIndent
 
         ' ' :: xs ->
             t acc (i + 1) src xs
 
         '=' :: xs ->
-            t (Token i T_Equal :: acc) (i + 1) src xs
+            t (( i, T_Equal ) :: acc) (i + 1) src xs
 
         x :: xs ->
             let
@@ -163,8 +177,30 @@ t acc i src remaining =
                             chunk : String
                             chunk =
                                 String.slice i newI src
+
+                            id : Id
+                            id =
+                                case toKeyword chunk of
+                                    Just key ->
+                                        key
+
+                                    Nothing ->
+                                        T_Lowercase chunk
                         in
-                        t (Token i (T_Lowercase chunk) :: acc) newI src rest
+                        t (( i, id ) :: acc) newI src rest
+
+                    Stop length ->
+                        let
+                            id : String
+                            id =
+                                String.slice i (i + length) src
+                        in
+                        stop i id acc
+
+            else if isUppercase code then
+                case chompUppercase i 1 xs src of
+                    Continue ( newI, id ) rest ->
+                        t (( i, id ) :: acc) newI src rest
 
                     Stop length ->
                         let
@@ -180,7 +216,7 @@ t acc i src remaining =
                         let
                             newAcc : List Token
                             newAcc =
-                                Token i (T_Number parsed.value) :: acc
+                                ( i, T_Number parsed.value ) :: acc
                         in
                         t newAcc (i + parsed.length) src rest
 
@@ -203,6 +239,19 @@ t acc i src remaining =
                         String.slice i (i + length) src
                 in
                 stop i token acc
+
+
+toKeyword : String -> Maybe Id
+toKeyword str =
+    case str of
+        "export" ->
+            Just T_Export
+
+        "import" ->
+            Just T_Import
+
+        _ ->
+            Nothing
 
 
 lowercase : Int -> List Char -> Tokenizer Int Int
@@ -269,7 +318,12 @@ parseIllegal i chars =
 
 stop : Int -> String -> List Token -> List Token
 stop i str acc =
-    reverseTo [ Token i (T_Illegal str) ] acc
+    reverseTo [ ( i, T_Illegal str ) ] acc
+
+
+reverse : List a -> List a
+reverse list =
+    reverseTo [] list
 
 
 reverseTo : List a -> List a -> List a
@@ -282,6 +336,84 @@ reverseTo acc remaining =
             reverseTo (x :: acc) xs
 
 
+chompUppercase : Int -> Int -> List Char -> String -> Tokenizer Int ( Int, Id )
+chompUppercase start length characters src =
+    case characters of
+        [] ->
+            let
+                newI : Int
+                newI =
+                    start + length
+
+                id : String
+                id =
+                    String.slice start newI src
+            in
+            Continue ( newI, T_Uppercase id ) characters
+
+        '.' :: x :: xs ->
+            let
+                code : Int
+                code =
+                    Char.toCode x
+            in
+            if isLowercase code then
+                case lowercase 1 xs of
+                    Continue lowercaseLength afterLowercase ->
+                        let
+                            moduleNameEnd : Int
+                            moduleNameEnd =
+                                start + length
+
+                            lowercaseStart : Int
+                            lowercaseStart =
+                                moduleNameEnd + 1
+
+                            newI : Int
+                            newI =
+                                lowercaseStart + lowercaseLength
+
+                            moduleName : String
+                            moduleName =
+                                String.slice start moduleNameEnd src
+
+                            functionName =
+                                String.slice lowercaseStart newI src
+                        in
+                        Continue ( newI, T_Lowercase {- moduleName -} functionName )
+                            afterLowercase
+
+                    Stop e ->
+                        Stop e
+
+            else
+                parseIllegal (length + 2) xs |> Stop
+
+        x :: xs ->
+            let
+                code : Int
+                code =
+                    Char.toCode x
+            in
+            if isAlphanumeric code then
+                chompUppercase start (length + 1) xs src
+
+            else if isBreaking x then
+                let
+                    newI : Int
+                    newI =
+                        start + length
+
+                    id : String
+                    id =
+                        String.slice start newI src
+                in
+                Continue ( newI, T_Uppercase id ) characters
+
+            else
+                parseIllegal (length + 1) xs |> Stop
+
+
 
 -- Helpers
 
@@ -291,6 +423,11 @@ isAlphanumeric code =
     (0x61 <= code && code <= 0x7A)
         || (code <= 0x5A && 0x41 <= code)
         || (code <= 0x39 && 0x30 <= code)
+
+
+isUppercase : Int -> Bool
+isUppercase code =
+    code <= 0x5A && 0x41 <= code
 
 
 isLowercase : Int -> Bool
@@ -397,9 +534,25 @@ type Parser e a
 
 type alias File =
     { name : String
+    , exports : Exports
+    , imports : Imports
     , declarations :
         -- The list is reversed
         List Declaration
+    }
+
+
+type alias Exports =
+    List String
+
+
+type alias Imports =
+    List Import
+
+
+type alias Import =
+    { moduleName : String
+    , exposed : List String
     }
 
 
@@ -411,8 +564,10 @@ type alias Declaration =
 
 
 type DeclarationParsingError
-    = WrongDeclarationSyntax
+    = UnexpectedToken Token
     | ExpressionParsingError Int String ExpressionParsingError
+    | DeclarationMustBeLowercase Token
+    | ExpectingEqual Token
 
 
 type Expression
@@ -426,14 +581,134 @@ type ExpressionParsingError
 
 parseFile : String -> List Token -> BackendTask FatalError File
 parseFile name tokens =
-    case parseDeclarations tokens of
-        Parsed declarations _ ->
-            File name declarations |> Task.succeed
-
+    case parseExports tokens of
         Error e ->
-            errorToString e
-                |> FatalError.fromString
-                |> Task.fail
+            exportParsingErrorToString e |> FatalError.fromString |> Task.fail
+
+        Parsed exports afterExports ->
+            case parseImports afterExports of
+                Error e ->
+                    Debug.toString e |> FatalError.fromString |> Task.fail
+
+                Parsed imports afterImports ->
+                    case parseDeclarations afterImports of
+                        Parsed declarations _ ->
+                            File name exports imports declarations
+                                |> Task.succeed
+
+                        Error e ->
+                            errorToString e
+                                |> FatalError.fromString
+                                |> Task.fail
+
+
+type ExportParsingError
+    = ExpectingAFunctionName Token
+
+
+parseExports : List Token -> Parser ExportParsingError Exports
+parseExports tokens =
+    case tokens of
+        ( _, T_Indent _ ) :: ((( _, T_Indent _ ) :: _) as rest) ->
+            parseExports rest
+
+        ( _, T_Indent 0 ) :: ( _, T_Export ) :: afterKeyword ->
+            case parseExportList [] afterKeyword of
+                Error e ->
+                    Error e
+
+                Parsed exports afterExports ->
+                    Parsed (reverse exports) afterExports
+
+        _ ->
+            Parsed [] tokens
+
+
+parseExportList : Exports -> List Token -> Parser ExportParsingError Exports
+parseExportList exports tokens =
+    case tokens of
+        ( _, T_Indent _ ) :: ((( _, T_Indent _ ) :: _) as rest) ->
+            parseExportList exports rest
+
+        ( _, T_Indent n ) :: ( _, T_Lowercase f ) :: rest ->
+            if n > 0 then
+                parseExportList (f :: exports) rest
+
+            else
+                Parsed exports tokens
+
+        ( _, T_Indent n ) :: unexpected :: _ ->
+            if n > 0 then
+                ExpectingAFunctionName unexpected |> Error
+
+            else
+                Parsed exports tokens
+
+        _ ->
+            Parsed exports tokens
+
+
+parseImports : List Token -> Parser e Imports
+parseImports tokens =
+    case tokens of
+        ( _, T_Indent _ ) :: ((( _, T_Indent _ ) :: _) as rest) ->
+            parseImports rest
+
+        ( _, T_Indent 0 ) :: ( _, T_Import ) :: rest ->
+            case parseImportList [] rest of
+                Error e ->
+                    Error e
+
+                Parsed imports afterImports ->
+                    Parsed (reverse imports) afterImports
+
+        _ ->
+            Parsed [] tokens
+
+
+parseImportList : Imports -> List Token -> Parser e Imports
+parseImportList imports tokens =
+    case tokens of
+        ( _, T_Indent n ) :: ( _, T_Uppercase m ) :: afterModule ->
+            if n > 0 then
+                case parseExposedList n [] afterModule of
+                    Error e ->
+                        Error e
+
+                    Parsed exposed afterExposed ->
+                        parseImportList (Import m exposed :: imports)
+                            afterExposed
+
+            else
+                Parsed (reverse imports) tokens
+
+        _ ->
+            Parsed (reverse imports) tokens
+
+
+parseExposedList : Int -> List String -> List Token -> Parser e (List String)
+parseExposedList indent exposed tokens =
+    case tokens of
+        ( _, T_Indent _ ) :: ((( _, T_Indent _ ) :: _) as rest) ->
+            parseExposedList indent exposed rest
+
+        ( _, T_Indent n ) :: ( _, T_Lowercase f ) :: afterFunction ->
+            if n > indent then
+                parseExposedList indent (f :: exposed) afterFunction
+
+            else
+                Parsed (reverse exposed) tokens
+
+        _ ->
+            Parsed (reverse exposed) tokens
+
+
+exportParsingErrorToString : ExportParsingError -> String
+exportParsingErrorToString error =
+    case error of
+        ExpectingAFunctionName ( _, id ) ->
+            "I’m trying to parse an exported function but I found "
+                ++ describeToken id
 
 
 parseDeclarations : List Token -> Parser DeclarationParsingError (List Declaration)
@@ -447,31 +722,42 @@ parseDeclarationsHelp acc tokens =
         [] ->
             Parsed acc []
 
-        [ Token _ (T_Indent _) ] ->
+        [ ( _, T_Indent _ ) ] ->
             Parsed acc []
 
-        (Token _ (T_Indent _)) :: (((Token _ (T_Indent _)) :: _) as rest) ->
+        ( _, T_Indent _ ) :: ((( _, T_Indent _ ) :: _) as rest) ->
             parseDeclarationsHelp acc rest
 
-        (Token _ (T_Indent 0)) :: (Token start (T_Lowercase str)) :: (Token _ T_Equal) :: rest ->
-            case parseExpression rest of
+        ( _, T_Indent 0 ) :: ( start, T_Lowercase str ) :: ( _, T_Equal ) :: afterEqual ->
+            case parseExpression afterEqual of
                 Parsed exp afterExp ->
-                    parseDeclarationsHelp (Declaration str exp start :: acc) afterExp
+                    parseDeclarationsHelp
+                        (Declaration str exp start :: acc)
+                        afterExp
 
                 Error e ->
                     ExpressionParsingError start str e |> Error
 
-        (Token _ _) :: _ ->
-            Error WrongDeclarationSyntax
+        ( _, T_Indent 0 ) :: ( _, T_Lowercase _ ) :: found :: _ ->
+            ExpectingEqual found |> Error
+
+        ( _, T_Indent 0 ) :: unexpected :: _ ->
+            DeclarationMustBeLowercase unexpected |> Error
+
+        ( _, T_Indent _ ) :: unexpected :: _ ->
+            UnexpectedToken unexpected |> Error
+
+        unexpected :: _ ->
+            UnexpectedToken unexpected |> Error
 
 
 parseExpression : List Token -> Parser ExpressionParsingError Expression
 parseExpression tokens =
     case tokens of
-        (Token i (T_Number n)) :: rest ->
+        ( i, T_Number n ) :: rest ->
             Parsed (Number i n) rest
 
-        (Token i unexpected) :: _ ->
+        ( i, unexpected ) :: _ ->
             UnexpectedTokenForExpression i unexpected |> Error
 
         [] ->
@@ -559,14 +845,22 @@ jsExpressionToString expression =
 errorToString : DeclarationParsingError -> String
 errorToString error =
     case error of
-        WrongDeclarationSyntax ->
-            "Wrong declaration syntax"
+        UnexpectedToken ( _, id ) ->
+            "I’m trying to parse a declaration but I found " ++ describeToken id
 
         ExpressionParsingError _ str e ->
             "I’m trying to parse "
                 ++ str
                 ++ " but I have a problem. "
                 ++ expressionParsingErrorToString e
+
+        DeclarationMustBeLowercase ( _, id ) ->
+            "Declarations must start with a lowercase word, but I found "
+                ++ describeToken id
+
+        ExpectingEqual ( _, id ) ->
+            "I was expecting an equal symbol = after this declaration’s name, but I found "
+                ++ describeToken id
 
 
 expressionParsingErrorToString : ExpressionParsingError -> String
@@ -588,6 +882,9 @@ describeToken id =
         T_Lowercase str ->
             "the word " ++ str
 
+        T_Uppercase str ->
+            "the word " ++ str
+
         T_Equal ->
             "the symbol ="
 
@@ -596,3 +893,9 @@ describeToken id =
 
         T_Illegal str ->
             "something weird: " ++ str
+
+        T_Export ->
+            "the export keyword"
+
+        T_Import ->
+            "the import keyword"
