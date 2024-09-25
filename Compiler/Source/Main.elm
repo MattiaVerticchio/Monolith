@@ -565,7 +565,7 @@ type alias File =
 
 
 type alias Exports =
-    List String
+    Set String
 
 
 type alias Imports =
@@ -635,15 +635,10 @@ parseExports tokens =
             parseExports rest
 
         ( _, T_Indent 0 ) :: ( _, T_Export ) :: afterKeyword ->
-            case parseExportList [] afterKeyword of
-                Error e ->
-                    Error e
-
-                Parsed exports afterExports ->
-                    Parsed (reverse exports) afterExports
+            parseExportList Set.empty afterKeyword
 
         _ ->
-            Parsed [] tokens
+            Parsed Set.empty tokens
 
 
 parseExportList : Exports -> List Token -> Parser ExportParsingError Exports
@@ -654,7 +649,7 @@ parseExportList exports tokens =
 
         ( _, T_Indent n ) :: ( _, T_Lowercase f ) :: rest ->
             if n > 0 then
-                parseExportList (f :: exports) rest
+                parseExportList (Set.insert f exports) rest
 
             else
                 Parsed exports tokens
