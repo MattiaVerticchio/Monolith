@@ -343,11 +343,6 @@ stop i str acc =
     reverseTo [ ( i, T_Illegal str ) ] acc
 
 
-reverse : List a -> List a
-reverse list =
-    reverseTo [] list
-
-
 reverseTo : List a -> List a -> List a
 reverseTo acc remaining =
     case remaining of
@@ -569,13 +564,7 @@ type alias Exports =
 
 
 type alias Imports =
-    List Import
-
-
-type alias Import =
-    { moduleName : String
-    , exposed : List String
-    }
+    Dict String (Set String)
 
 
 type alias Declaration =
@@ -672,15 +661,10 @@ parseImports tokens =
             parseImports rest
 
         ( _, T_Indent 0 ) :: ( _, T_Import ) :: rest ->
-            case parseImportList [] rest of
-                Error e ->
-                    Error e
-
-                Parsed imports afterImports ->
-                    Parsed (reverse imports) afterImports
+            parseImportList Dict.empty rest
 
         _ ->
-            Parsed [] tokens
+            Parsed Dict.empty tokens
 
 
 parseImportList : Imports -> List Token -> Parser e Imports
@@ -688,22 +672,32 @@ parseImportList imports tokens =
     case tokens of
         ( _, T_Indent n ) :: ( _, T_Uppercase m ) :: afterModule ->
             if n > 0 then
-                case parseExposedList n [] afterModule of
+                let
+                    acc : Set String
+                    acc =
+                        case Dict.get m imports of
+                            Nothing ->
+                                Set.empty
+
+                            Just exposed ->
+                                exposed
+                in
+                case parseExposedList n acc afterModule of
                     Error e ->
                         Error e
 
                     Parsed exposed afterExposed ->
-                        parseImportList (Import m exposed :: imports)
+                        parseImportList (Dict.insert m exposed imports)
                             afterExposed
 
             else
-                Parsed (reverse imports) tokens
+                Parsed imports tokens
 
         _ ->
-            Parsed (reverse imports) tokens
+            Parsed imports tokens
 
 
-parseExposedList : Int -> List String -> List Token -> Parser e (List String)
+parseExposedList : Int -> Set String -> List Token -> Parser e (Set String)
 parseExposedList indent exposed tokens =
     case tokens of
         ( _, T_Indent _ ) :: ((( _, T_Indent _ ) :: _) as rest) ->
@@ -711,13 +705,13 @@ parseExposedList indent exposed tokens =
 
         ( _, T_Indent n ) :: ( _, T_Lowercase f ) :: afterFunction ->
             if n > indent then
-                parseExposedList indent (f :: exposed) afterFunction
+                parseExposedList indent (Set.insert f exposed) afterFunction
 
             else
-                Parsed (reverse exposed) tokens
+                Parsed exposed tokens
 
         _ ->
-            Parsed (reverse exposed) tokens
+            Parsed exposed tokens
 
 
 exportParsingErrorToString : ExportParsingError -> String
