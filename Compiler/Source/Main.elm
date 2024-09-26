@@ -8,6 +8,7 @@ import Dict exposing (Dict)
 import FatalError exposing (FatalError)
 import Json.Decode as Decode exposing (Decoder)
 import Json.Encode as Encode
+import Natural exposing (Natural)
 import Pages.Script as Script exposing (Script)
 import Set exposing (Set)
 
@@ -128,7 +129,7 @@ type alias Token =
 
 
 type Id
-    = T_Number Int
+    = T_Number Natural
     | T_Lowercase String
     | T_Uppercase String
     | T_Equal
@@ -233,14 +234,19 @@ t acc i src remaining =
                         stop i id acc
 
             else if isDigit code then
-                case integer (code - 0x30) 1 xs of
-                    Continue parsed rest ->
+                case integer (i + 1) xs of
+                    Continue newI rest ->
                         let
+                            value : Natural
+                            value =
+                                String.slice i newI src
+                                    |> Natural.fromSafeString
+
                             newAcc : List Token
                             newAcc =
-                                ( i, T_Number parsed.value ) :: acc
+                                ( i, T_Number value ) :: acc
                         in
-                        t newAcc (i + parsed.length) src rest
+                        t newAcc newI src rest
 
                     Stop length ->
                         let
@@ -298,15 +304,11 @@ lowercase length characters =
                 parseIllegal (length + 1) xs |> Stop
 
 
-integer :
-    Int
-    -> Int
-    -> List Char
-    -> Tokenizer Int { length : Int, value : Int }
-integer acc length chars =
+integer : Int -> List Char -> Tokenizer Int Int
+integer length chars =
     case chars of
         [] ->
-            Continue { length = length, value = acc } chars
+            Continue length chars
 
         x :: xs ->
             let
@@ -315,10 +317,10 @@ integer acc length chars =
                     Char.toCode x
             in
             if isDigit code then
-                integer (acc * 10 + code - 0x30) (length + 1) xs
+                integer (length + 1) xs
 
             else if isBreaking x then
-                Continue { length = length, value = acc } chars
+                Continue length chars
 
             else
                 parseIllegal (length + 1) xs |> Stop
@@ -582,7 +584,7 @@ type DeclarationParsingError
 
 
 type Expression
-    = Number Int Int
+    = Number Int Natural
 
 
 type ExpressionParsingError
@@ -944,7 +946,7 @@ type alias JsDeclaration =
 
 
 type JsExpression
-    = JsNumber Int
+    = JsNumber Natural
 
 
 fileToJs : File -> List JsDeclaration
@@ -984,7 +986,7 @@ expressionToString : Expression -> String
 expressionToString expression =
     case expression of
         Number _ n ->
-            String.fromInt n
+            Natural.toString n
 
 
 jsFileToString : List JsDeclaration -> String
@@ -1004,7 +1006,7 @@ jsExpressionToString : JsExpression -> String
 jsExpressionToString expression =
     case expression of
         JsNumber n ->
-            String.fromInt n
+            Natural.toString n
 
 
 
@@ -1046,7 +1048,7 @@ describeToken : Id -> String
 describeToken id =
     case id of
         T_Number n ->
-            "the number " ++ String.fromInt n
+            "the number " ++ Natural.toString n
 
         T_Lowercase str ->
             "the word " ++ str

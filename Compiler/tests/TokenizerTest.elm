@@ -3,6 +3,7 @@ module TokenizerTest exposing (..)
 import Expect
 import Fuzz exposing (Fuzzer)
 import Main exposing (Id(..), Token, tokenize)
+import Natural exposing (Natural)
 import Test exposing (Test)
 
 
@@ -83,7 +84,7 @@ tokenLength : Id -> Int
 tokenLength token =
     case token of
         T_Number n ->
-            String.fromInt n |> String.length
+            Natural.toString n |> String.length
 
         T_Illegal str ->
             String.length str
@@ -110,13 +111,18 @@ tokenLength token =
 id : Fuzzer Id
 id =
     Fuzz.oneOf
-        [ Fuzz.map T_Number positiveInt
+        [ Fuzz.map T_Number natural
         , Fuzz.map T_Lowercase lowercaseWord
         , Fuzz.map T_Uppercase uppercaseWord
         , Fuzz.constant T_Equal
         , Fuzz.constant T_Import
         , Fuzz.constant T_Export
         ]
+
+
+natural : Fuzzer Natural
+natural =
+    Fuzz.map Natural.fromSafeInt positiveInt
 
 
 positiveInt : Fuzzer Int
@@ -133,7 +139,7 @@ rendering =
                 rendered =
                     case t of
                         T_Number n ->
-                            String.fromInt n
+                            Natural.toString n
 
                         T_Lowercase str ->
                             str
@@ -163,7 +169,7 @@ toString : Id -> String
 toString t =
     case t of
         T_Number n ->
-            String.fromInt n
+            Natural.toString n
 
         T_Illegal str ->
             str
