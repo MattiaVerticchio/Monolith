@@ -130,6 +130,8 @@ type alias Token =
 
 type Id
     = T_Number Base Natural
+      -- before.after : 3.14 -> before = 3, after = 14
+    | T_Decimal Natural Natural
     | T_Lowercase String
     | T_Uppercase String
     | T_Equal
@@ -140,10 +142,10 @@ type Id
 
 
 type Base
-    = Hexadecimal
-    | Decimal
-    | Octal
-    | Binary
+    = Base16
+    | Base10
+    | Base8
+    | Base2
 
 
 tokenize : String -> List Token
@@ -258,21 +260,39 @@ t acc i src remaining =
                         if String.startsWith "0b" chunk || String.startsWith "0B" chunk then
                             String.slice 2 length chunk
                                 |> Natural.fromBinaryString
-                                |> Maybe.map (T_Number Binary)
+                                |> Maybe.map (T_Number Base2)
 
                         else if String.startsWith "0o" chunk || String.startsWith "0O" chunk then
                             String.slice 2 length chunk
                                 |> Natural.fromOctalString
-                                |> Maybe.map (T_Number Octal)
+                                |> Maybe.map (T_Number Base8)
 
                         else if String.startsWith "0x" chunk || String.startsWith "0X" chunk then
                             String.slice 2 length chunk
                                 |> Natural.fromHexString
-                                |> Maybe.map (T_Number Hexadecimal)
+                                |> Maybe.map (T_Number Base16)
 
                         else
-                            Natural.fromBaseBString 10 chunk
-                                |> Maybe.map (T_Number Decimal)
+                            case Natural.fromBaseBString 10 chunk of
+                                Just integer ->
+                                    T_Number Base10 integer |> Just
+
+                                Nothing ->
+                                    case String.split "." chunk of
+                                        [ before, after ] ->
+                                            case
+                                                ( Natural.fromString before
+                                                , Natural.fromString after
+                                                )
+                                            of
+                                                ( Just b, Just a ) ->
+                                                    T_Decimal b a |> Just
+
+                                                _ ->
+                                                    Nothing
+
+                                        _ ->
+                                            Nothing
                 in
                 case maybeId of
                     Just id ->
@@ -343,28 +363,6 @@ lowercase length characters =
 
             else if isBreaking x then
                 Continue length characters
-
-            else
-                parseIllegal (length + 1) xs |> Stop
-
-
-integer : Int -> List Char -> Tokenizer Int Int
-integer length chars =
-    case chars of
-        [] ->
-            Continue length chars
-
-        x :: xs ->
-            let
-                code : Int
-                code =
-                    Char.toCode x
-            in
-            if isDigit code then
-                integer (length + 1) xs
-
-            else if isBreaking x then
-                Continue length chars
 
             else
                 parseIllegal (length + 1) xs |> Stop
@@ -629,6 +627,7 @@ type DeclarationParsingError
 
 type Expression
     = Number Int Base Natural
+    | Decimal Int Natural Natural
 
 
 type ExpressionParsingError
@@ -814,6 +813,9 @@ parseExpression tokens =
         ( i, T_Number b n ) :: rest ->
             Parsed (Number i b n) rest
 
+        ( i, T_Decimal before after ) :: rest ->
+            Parsed (Decimal i before after) rest
+
         ( i, unexpected ) :: _ ->
             UnexpectedTokenForExpression i unexpected |> Error
 
@@ -990,7 +992,7 @@ type alias JsDeclaration =
 
 
 type JsExpression
-    = JsNumber Natural
+    = JsNumber Natural (Maybe Natural)
 
 
 fileToJs : File -> List JsDeclaration
@@ -1009,7 +1011,10 @@ expressionToJs : Expression -> JsExpression
 expressionToJs expression =
     case expression of
         Number _ _ n ->
-            JsNumber n
+            JsNumber n Nothing
+
+        Decimal _ before after ->
+            JsNumber before (Just after)
 
 
 
@@ -1029,17 +1034,20 @@ declarationToString declaration =
 expressionToString : Expression -> String
 expressionToString expression =
     case expression of
-        Number _ Hexadecimal n ->
+        Number _ Base16 n ->
             Natural.toHexString n
 
-        Number _ Decimal n ->
+        Number _ Base10 n ->
             Natural.toString n
 
-        Number _ Octal n ->
+        Number _ Base8 n ->
             Natural.toOctalString n
 
-        Number _ Binary n ->
+        Number _ Base2 n ->
             Natural.toBinaryString n
+
+        Decimal _ before after ->
+            Natural.toString before ++ "." ++ Natural.toString after
 
 
 jsFileToString : List JsDeclaration -> String
@@ -1058,8 +1066,11 @@ jsDeclarationToString declaration =
 jsExpressionToString : JsExpression -> String
 jsExpressionToString expression =
     case expression of
-        JsNumber n ->
+        JsNumber n Nothing ->
             Natural.toString n
+
+        JsNumber before (Just after) ->
+            Natural.toString before ++ "." ++ Natural.toString after
 
 
 
@@ -1100,16 +1111,22 @@ expressionParsingErrorToString error =
 describeToken : Id -> String
 describeToken id =
     case id of
-        T_Number Hexadecimal n ->
+        T_Decimal before after ->
+            "the decimal number "
+                ++ Natural.toString before
+                ++ "."
+                ++ Natural.toString after
+
+        T_Number Base16 n ->
             "the hexadecimal number " ++ Natural.toHexString n
 
-        T_Number Decimal n ->
+        T_Number Base10 n ->
             "the number " ++ Natural.toString n
 
-        T_Number Octal n ->
+        T_Number Base8 n ->
             "the octal number " ++ Natural.toOctalString n
 
-        T_Number Binary n ->
+        T_Number Base2 n ->
             "the binary number " ++ Natural.toBinaryString n
 
         T_Lowercase str ->

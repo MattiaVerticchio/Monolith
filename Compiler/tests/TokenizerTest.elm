@@ -83,16 +83,21 @@ idsToTokens i acc remaining =
 tokenLength : Id -> Int
 tokenLength token =
     case token of
-        T_Number Hexadecimal n ->
+        T_Decimal before after ->
+            String.length (Natural.toString before)
+                + String.length (Natural.toString after)
+                + 1
+
+        T_Number Base16 n ->
             String.length (Natural.toHexString n) + 2
 
-        T_Number Decimal n ->
+        T_Number Base10 n ->
             Natural.toString n |> String.length
 
-        T_Number Octal n ->
+        T_Number Base8 n ->
             String.length (Natural.toOctalString n) + 2
 
-        T_Number Binary n ->
+        T_Number Base2 n ->
             String.length (Natural.toBinaryString n) + 2
 
         T_Illegal str ->
@@ -121,6 +126,7 @@ id : Fuzzer Id
 id =
     Fuzz.oneOf
         [ Fuzz.map2 T_Number baseFuzzer natural
+        , Fuzz.map2 T_Decimal natural natural
         , Fuzz.map T_Lowercase lowercaseWord
         , Fuzz.map T_Uppercase uppercaseWord
         , Fuzz.constant T_Equal
@@ -132,10 +138,10 @@ id =
 baseFuzzer : Fuzzer Base
 baseFuzzer =
     Fuzz.oneOfValues
-        [ Hexadecimal
-        , Decimal
-        , Octal
-        , Binary
+        [ Base16
+        , Base10
+        , Base8
+        , Base2
         ]
 
 
@@ -152,16 +158,19 @@ positiveInt =
 toString : Id -> String
 toString t =
     case t of
-        T_Number Hexadecimal n ->
+        T_Decimal before after ->
+            Natural.toString before ++ "." ++ Natural.toString after
+
+        T_Number Base16 n ->
             "0x" ++ Natural.toHexString n
 
-        T_Number Decimal n ->
+        T_Number Base10 n ->
             Natural.toString n
 
-        T_Number Octal n ->
+        T_Number Base8 n ->
             "0o" ++ Natural.toOctalString n
 
-        T_Number Binary n ->
+        T_Number Base2 n ->
             "0b" ++ Natural.toBinaryString n
 
         T_Illegal str ->
