@@ -1,4 +1,4 @@
-module Main exposing (Id(..), Token, run, tokenize)
+module Main exposing (Base(..), Declaration, Exports, File, Id(..), Imports, Token, run, tokenize)
 
 import BackendTask as Task exposing (BackendTask)
 import BackendTask.Custom as Custom
@@ -129,7 +129,7 @@ type alias Token =
 
 
 type Id
-    = T_Number Natural
+    = T_Number Base Natural
     | T_Lowercase String
     | T_Uppercase String
     | T_Equal
@@ -137,6 +137,13 @@ type Id
     | T_Import
     | T_Indent Int
     | T_Illegal String
+
+
+type Base
+    = Hexadecimal
+    | Decimal
+    | Octal
+    | Binary
 
 
 tokenize : String -> List Token
@@ -234,27 +241,50 @@ t acc i src remaining =
                         stop i id acc
 
             else if isDigit code then
-                case integer (i + 1) xs of
-                    Continue newI rest ->
-                        let
-                            value : Natural
-                            value =
-                                String.slice i newI src
-                                    |> Natural.fromSafeString
+                let
+                    ( end, afterEnd ) =
+                        untilBreaking (i + 1) xs
 
-                            newAcc : List Token
-                            newAcc =
-                                ( i, T_Number value ) :: acc
-                        in
-                        t newAcc newI src rest
+                    length : Int
+                    length =
+                        end - i
 
-                    Stop length ->
+                    chunk : String
+                    chunk =
+                        String.slice i end src
+
+                    maybeId : Maybe Id
+                    maybeId =
+                        if String.startsWith "0b" chunk || String.startsWith "0B" chunk then
+                            String.slice 2 length chunk
+                                |> Natural.fromBinaryString
+                                |> Maybe.map (T_Number Binary)
+
+                        else if String.startsWith "0o" chunk || String.startsWith "0O" chunk then
+                            String.slice 2 length chunk
+                                |> Natural.fromOctalString
+                                |> Maybe.map (T_Number Octal)
+
+                        else if String.startsWith "0x" chunk || String.startsWith "0X" chunk then
+                            String.slice 2 length chunk
+                                |> Natural.fromHexString
+                                |> Maybe.map (T_Number Hexadecimal)
+
+                        else
+                            Natural.fromBaseBString 10 chunk
+                                |> Maybe.map (T_Number Decimal)
+                in
+                case maybeId of
+                    Just id ->
+                        t (( i, id ) :: acc) end src afterEnd
+
+                    Nothing ->
                         let
-                            illegalToken : String
-                            illegalToken =
+                            token : String
+                            token =
                                 String.slice i (i + length) src
                         in
-                        stop i illegalToken acc
+                        stop i token acc
 
             else
                 let
@@ -267,6 +297,20 @@ t acc i src remaining =
                         String.slice i (i + length) src
                 in
                 stop i token acc
+
+
+untilBreaking : Int -> List Char -> ( Int, List Char )
+untilBreaking i characters =
+    case characters of
+        [] ->
+            ( i, characters )
+
+        x :: xs ->
+            if isBreaking x then
+                ( i, characters )
+
+            else
+                untilBreaking (i + 1) xs
 
 
 toKeyword : String -> Maybe Id
@@ -584,7 +628,7 @@ type DeclarationParsingError
 
 
 type Expression
-    = Number Int Natural
+    = Number Int Base Natural
 
 
 type ExpressionParsingError
@@ -767,8 +811,8 @@ parseDeclarationsHelp acc tokens =
 parseExpression : List Token -> Parser ExpressionParsingError Expression
 parseExpression tokens =
     case tokens of
-        ( i, T_Number n ) :: rest ->
-            Parsed (Number i n) rest
+        ( i, T_Number b n ) :: rest ->
+            Parsed (Number i b n) rest
 
         ( i, unexpected ) :: _ ->
             UnexpectedTokenForExpression i unexpected |> Error
@@ -964,7 +1008,7 @@ declarationToJs declaration =
 expressionToJs : Expression -> JsExpression
 expressionToJs expression =
     case expression of
-        Number _ n ->
+        Number _ _ n ->
             JsNumber n
 
 
@@ -985,8 +1029,17 @@ declarationToString declaration =
 expressionToString : Expression -> String
 expressionToString expression =
     case expression of
-        Number _ n ->
+        Number _ Hexadecimal n ->
+            Natural.toHexString n
+
+        Number _ Decimal n ->
             Natural.toString n
+
+        Number _ Octal n ->
+            Natural.toOctalString n
+
+        Number _ Binary n ->
+            Natural.toBinaryString n
 
 
 jsFileToString : List JsDeclaration -> String
@@ -1047,8 +1100,17 @@ expressionParsingErrorToString error =
 describeToken : Id -> String
 describeToken id =
     case id of
-        T_Number n ->
+        T_Number Hexadecimal n ->
+            "the hexadecimal number " ++ Natural.toHexString n
+
+        T_Number Decimal n ->
             "the number " ++ Natural.toString n
+
+        T_Number Octal n ->
+            "the octal number " ++ Natural.toOctalString n
+
+        T_Number Binary n ->
+            "the binary number " ++ Natural.toBinaryString n
 
         T_Lowercase str ->
             "the word " ++ str

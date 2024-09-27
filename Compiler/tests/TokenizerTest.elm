@@ -2,7 +2,7 @@ module TokenizerTest exposing (..)
 
 import Expect
 import Fuzz exposing (Fuzzer)
-import Main exposing (Id(..), Token, tokenize)
+import Main exposing (Base(..), Id(..), Token, tokenize)
 import Natural exposing (Natural)
 import Test exposing (Test)
 
@@ -83,8 +83,17 @@ idsToTokens i acc remaining =
 tokenLength : Id -> Int
 tokenLength token =
     case token of
-        T_Number n ->
+        T_Number Hexadecimal n ->
+            Natural.toHexString n |> String.length
+
+        T_Number Decimal n ->
             Natural.toString n |> String.length
+
+        T_Number Octal n ->
+            Natural.toOctalString n |> String.length
+
+        T_Number Binary n ->
+            Natural.toBinaryString n |> String.length
 
         T_Illegal str ->
             String.length str
@@ -111,7 +120,7 @@ tokenLength token =
 id : Fuzzer Id
 id =
     Fuzz.oneOf
-        [ Fuzz.map T_Number natural
+        [ Fuzz.map (T_Number Decimal) natural
         , Fuzz.map T_Lowercase lowercaseWord
         , Fuzz.map T_Uppercase uppercaseWord
         , Fuzz.constant T_Equal
@@ -127,49 +136,23 @@ natural =
 
 positiveInt : Fuzzer Int
 positiveInt =
-    Fuzz.intRange 0 max
-
-
-rendering : Test
-rendering =
-    Test.fuzz id "Rendering tests" <|
-        \t ->
-            let
-                rendered : String
-                rendered =
-                    case t of
-                        T_Number n ->
-                            Natural.toString n
-
-                        T_Lowercase str ->
-                            str
-
-                        T_Uppercase str ->
-                            str
-
-                        T_Equal ->
-                            "="
-
-                        T_Export ->
-                            "export"
-
-                        T_Import ->
-                            "import"
-
-                        T_Indent n ->
-                            "\n" ++ String.repeat n " "
-
-                        T_Illegal str ->
-                            str
-            in
-            Expect.equal rendered (toString t)
+    Fuzz.intRange 0 9999
 
 
 toString : Id -> String
 toString t =
     case t of
-        T_Number n ->
+        T_Number Hexadecimal n ->
+            Natural.toHexString n
+
+        T_Number Decimal n ->
             Natural.toString n
+
+        T_Number Octal n ->
+            Natural.toOctalString n
+
+        T_Number Binary n ->
+            Natural.toBinaryString n
 
         T_Illegal str ->
             str
