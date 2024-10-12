@@ -18,8 +18,7 @@ import Set exposing (Set)
    Pipeline:
        read the files
         |> tokenize
-        |> parse
-        |> check for duplicated functions
+        |> parse + check for duplicated functions
         |> check for cyclic imports
         |> topological sort
         |> type checking
@@ -81,7 +80,18 @@ decodeDirent =
         (Decode.field "parentPath" Decode.string)
 
 
-readAndParseFiles : List String -> BackendTask FatalError (List { name : String, exports : Exports, imports : Imports, declarations : Dict String Declaration })
+readAndParseFiles :
+    List String
+    ->
+        BackendTask
+            FatalError
+            (List
+                { name : String
+                , exports : Exports
+                , imports : Imports
+                , declarations : Dict String Declaration
+                }
+            )
 readAndParseFiles files =
     List.map (readAndParseFile >> Task.andThen checkDuplicatedDeclarations) files
         |> Task.combine
@@ -139,6 +149,15 @@ type Id
     | T_Import
     | T_Indent Int
     | T_Illegal String
+    | T_BinaryOperator Operator
+
+
+type Operator
+    = Add
+    | Subtract
+    | Multiply
+    | Divide
+    | Power
 
 
 type Base
@@ -191,6 +210,21 @@ t acc i src remaining =
 
         '=' :: xs ->
             t (( i, T_Equal ) :: acc) (i + 1) src xs
+
+        '+' :: xs ->
+            t (( i, T_BinaryOperator Add ) :: acc) (i + 1) src xs
+
+        '-' :: xs ->
+            t (( i, T_BinaryOperator Subtract ) :: acc) (i + 1) src xs
+
+        '*' :: xs ->
+            t (( i, T_BinaryOperator Multiply ) :: acc) (i + 1) src xs
+
+        '/' :: xs ->
+            t (( i, T_BinaryOperator Divide ) :: acc) (i + 1) src xs
+
+        '^' :: xs ->
+            t (( i, T_BinaryOperator Power ) :: acc) (i + 1) src xs
 
         x :: xs ->
             let
@@ -628,6 +662,7 @@ type DeclarationParsingError
 type Expression
     = Number Int Base Natural
     | Decimal Int Natural Natural
+    | Binary Int Operator Expression Expression
 
 
 type ExpressionParsingError
@@ -809,6 +844,21 @@ parseDeclarationsHelp acc tokens =
 
 parseExpression : List Token -> Parser ExpressionParsingError Expression
 parseExpression tokens =
+    pratt 0 tokens
+
+
+pratt : Int -> List Token -> Parser ExpressionParsingError Expression
+pratt limit tokens =
+    case parseLeftExpression tokens of
+        Error e ->
+            Error e
+
+        Parsed left afterLeft ->
+            prattLoop limit left afterLeft
+
+
+parseLeftExpression : List Token -> Parser ExpressionParsingError Expression
+parseLeftExpression tokens =
     case tokens of
         ( i, T_Number b n ) :: rest ->
             Parsed (Number i b n) rest
@@ -821,6 +871,75 @@ parseExpression tokens =
 
         [] ->
             Error EndOfFileDuringExpression
+
+
+prattLoop : Int -> Expression -> List Token -> Parser ExpressionParsingError Expression
+prattLoop limit left afterLeft =
+    case afterLeft of
+        ( i, T_BinaryOperator operator ) :: afterOperator ->
+            let
+                { associativity, precedence } =
+                    operatorInfo operator
+            in
+            if precedence > limit then
+                let
+                    finalPrecedence : Int
+                    finalPrecedence =
+                        if associativity == Right then
+                            precedence - 1
+
+                        else
+                            precedence
+                in
+                case pratt finalPrecedence afterOperator of
+                    Parsed right afterRight ->
+                        prattLoop limit (Binary i operator left right) afterRight
+
+                    Error e ->
+                        Error e
+
+            else
+                Parsed left afterLeft
+
+        _ ->
+            Parsed left afterLeft
+
+
+type Associativity
+    = Left
+    | Right
+    | None
+
+
+operatorInfo : Operator -> { associativity : Associativity, precedence : Int }
+operatorInfo operator =
+    case operator of
+        Add ->
+            { associativity = Left, precedence = 7 }
+
+        Divide ->
+            { associativity = Left, precedence = 8 }
+
+        -- EqualTo ->
+        --     Info None 5 " == "
+        Power ->
+            { associativity = Right, precedence = 9 }
+
+        -- GreaterThan ->
+        --     Info None 5 " > "
+        -- GreaterThanOrEqual ->
+        --     Info None 5 " >= "
+        -- LessThan ->
+        --     Info None 5 " < "
+        -- LessThanOrEqual ->
+        --     Info None 5 " <= "
+        -- NotEqualTo ->
+        --     Info None 5 " != "
+        Multiply ->
+            { associativity = Left, precedence = 8 }
+
+        Subtract ->
+            { associativity = Left, precedence = 7 }
 
 
 
@@ -993,6 +1112,7 @@ type alias JsDeclaration =
 
 type JsExpression
     = JsNumber Natural (Maybe Natural)
+    | JsBinary Operator JsExpression JsExpression
 
 
 fileToJs : File -> List JsDeclaration
@@ -1015,6 +1135,9 @@ expressionToJs expression =
 
         Decimal _ before after ->
             JsNumber before (Just after)
+
+        Binary _ operator left right ->
+            JsBinary operator (expressionToJs left) (expressionToJs right)
 
 
 
@@ -1049,6 +1172,91 @@ expressionToString expression =
         Decimal _ before after ->
             Natural.toString before ++ "." ++ Natural.toString after
 
+        Binary _ operator a b ->
+            {-
+                Formatting with precedence rules
+
+                Child precedence        Child precedence          Child precedence
+               higher than parent:      lower than parent:        equal to parent:
+                  no parenthesis          parenthesize           check associativity
+                                                                     and branch
+
+                  a * b + c                 (a + b) * c         a / b * c != a / (b * c)
+
+                    add                         mul
+                   /   \                       /   \
+                 mul   c                     add    c
+                /   \                       /   \
+               a     b                     a     b
+
+            -}
+            let
+                parent : { associativity : Associativity, precedence : Int }
+                parent =
+                    operatorInfo operator
+
+                left : String
+                left =
+                    case a of
+                        Binary _ op _ _ ->
+                            let
+                                leftChild :
+                                    { associativity : Associativity
+                                    , precedence : Int
+                                    }
+                                leftChild =
+                                    operatorInfo op
+                            in
+                            if leftChild.precedence > parent.precedence then
+                                expressionToString a
+
+                            else if leftChild.precedence < parent.precedence then
+                                "(" ++ expressionToString a ++ ")"
+
+                            else if parent.associativity == Left then
+                                expressionToString a
+
+                            else
+                                "(" ++ expressionToString a ++ ")"
+
+                        -- Negate _ ->
+                        --     case operator of
+                        --         Caret ->
+                        --             "(" ++ toString a ++ ")"
+                        --         _ ->
+                        --             toString a
+                        _ ->
+                            expressionToString a
+
+                right : String
+                right =
+                    case b of
+                        Binary _ op _ _ ->
+                            let
+                                rightChild :
+                                    { associativity : Associativity
+                                    , precedence : Int
+                                    }
+                                rightChild =
+                                    operatorInfo op
+                            in
+                            if rightChild.precedence > parent.precedence then
+                                expressionToString b
+
+                            else if rightChild.precedence < parent.precedence then
+                                "(" ++ expressionToString b ++ ")"
+
+                            else if parent.associativity == Right then
+                                expressionToString b
+
+                            else
+                                "(" ++ expressionToString b ++ ")"
+
+                        _ ->
+                            expressionToString b
+            in
+            left ++ " " ++ operatorToString operator ++ " " ++ right
+
 
 jsFileToString : List JsDeclaration -> String
 jsFileToString =
@@ -1071,6 +1279,9 @@ jsExpressionToString expression =
 
         JsNumber before (Just after) ->
             Natural.toString before ++ "." ++ Natural.toString after
+
+        JsBinary _ _ _ ->
+            Debug.todo "branch 'JsBinary _ _ _' not implemented"
 
 
 
@@ -1149,3 +1360,25 @@ describeToken id =
 
         T_Import ->
             "the import keyword"
+
+        T_BinaryOperator operator ->
+            "the " ++ operatorToString operator ++ " operator"
+
+
+operatorToString : Operator -> String
+operatorToString operator =
+    case operator of
+        Add ->
+            "+"
+
+        Subtract ->
+            "-"
+
+        Multiply ->
+            "*"
+
+        Divide ->
+            "/"
+
+        Power ->
+            "^"
