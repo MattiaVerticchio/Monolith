@@ -35,6 +35,8 @@ natural = 420
 base16  = 0x1A4
 base8   = 0o644
 base2   = 0b110100100
+h       = 6.626e-34
+million = 1e6
 ```
 
 ### Math operators, precedence and associativity

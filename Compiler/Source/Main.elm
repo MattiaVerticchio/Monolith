@@ -1,4 +1,19 @@
-module Main exposing (Base(..), Declaration, Exports, File, Id(..), Imports, Token, run, tokenize)
+module Main exposing
+    ( Base(..)
+    , Declaration
+    , Exports
+    , File
+    , Id(..)
+    , Imports
+    , Operator(..)
+    , ScientificNumber(..)
+    , Sign(..)
+    , Token
+    , operatorToString
+    , run
+    , tokenIdToString
+    , tokenize
+    )
 
 import BackendTask as Task exposing (BackendTask)
 import BackendTask.Custom as Custom
@@ -142,6 +157,7 @@ type Id
     = T_Number Base Natural
       -- before.after : 3.14 -> before = 3, after = 14
     | T_Decimal Natural Natural
+    | T_Scientific ScientificNumber Sign Natural
     | T_Lowercase String
     | T_Uppercase String
     | T_Equal
@@ -150,6 +166,16 @@ type Id
     | T_Indent Int
     | T_Illegal String
     | T_BinaryOperator Operator
+
+
+type ScientificNumber
+    = IntegerBase Natural
+    | DecimalBase Natural Natural
+
+
+type Sign
+    = Positive
+    | Negative
 
 
 type Operator
@@ -279,7 +305,7 @@ t acc i src remaining =
             else if isDigit code then
                 let
                     ( end, afterEnd ) =
-                        untilBreaking (i + 1) xs
+                        untilDigitBreaking (i + 1) xs
 
                     length : Int
                     length =
@@ -307,23 +333,30 @@ t acc i src remaining =
                                 |> Maybe.map (T_Number Base16)
 
                         else
-                            case Natural.fromBaseBString 10 chunk of
-                                Just integer ->
-                                    T_Number Base10 integer |> Just
-
-                                Nothing ->
-                                    case String.split "." chunk of
-                                        [ before, after ] ->
-                                            case
-                                                ( Natural.fromString before
-                                                , Natural.fromString after
+                            case String.split "e" chunk of
+                                [ before, after ] ->
+                                    let
+                                        ( sign, newAfter ) =
+                                            if String.startsWith "-" after then
+                                                ( Negative
+                                                , String.dropLeft 1 after
                                                 )
-                                            of
-                                                ( Just b, Just a ) ->
-                                                    T_Decimal b a |> Just
 
-                                                _ ->
-                                                    Nothing
+                                            else
+                                                ( Positive, after )
+                                    in
+                                    Maybe.map3 T_Scientific
+                                        (parseScientificNumber before)
+                                        (Just sign)
+                                        (Natural.fromDecimalString newAfter)
+
+                                _ ->
+                                    case parseScientificNumber chunk of
+                                        Just (IntegerBase n) ->
+                                            T_Number Base10 n |> Just
+
+                                        Just (DecimalBase n m) ->
+                                            T_Decimal n m |> Just
 
                                         _ ->
                                             Nothing
@@ -351,6 +384,43 @@ t acc i src remaining =
                         String.slice i (i + length) src
                 in
                 stop i token acc
+
+
+parseScientificNumber : String -> Maybe ScientificNumber
+parseScientificNumber string =
+    case String.split "." string of
+        [ before, after ] ->
+            case ( Natural.fromString before, Natural.fromString after ) of
+                ( Just b, Just a ) ->
+                    DecimalBase b a |> Just
+
+                _ ->
+                    Nothing
+
+        _ ->
+            case Natural.fromBaseBString 10 string of
+                Just integer ->
+                    IntegerBase integer |> Just
+
+                _ ->
+                    Nothing
+
+
+untilDigitBreaking : Int -> List Char -> ( Int, List Char )
+untilDigitBreaking i characters =
+    case characters of
+        [] ->
+            ( i, characters )
+
+        'e' :: '-' :: xs ->
+            untilDigitBreaking (i + 2) xs
+
+        x :: xs ->
+            if isBreaking x then
+                ( i, characters )
+
+            else
+                untilDigitBreaking (i + 1) xs
 
 
 untilBreaking : Int -> List Char -> ( Int, List Char )
@@ -507,6 +577,69 @@ chompUppercase start length characters src =
 
             else
                 parseIllegal (length + 1) xs |> Stop
+
+
+tokenIdToString : Id -> String
+tokenIdToString id =
+    case id of
+        T_Decimal before after ->
+            Natural.toString before ++ "." ++ Natural.toString after
+
+        T_Number Base16 n ->
+            "0x" ++ Natural.toHexString n
+
+        T_Number Base10 n ->
+            Natural.toString n
+
+        T_Number Base8 n ->
+            "0o" ++ Natural.toOctalString n
+
+        T_Number Base2 n ->
+            "0b" ++ Natural.toBinaryString n
+
+        T_Illegal str ->
+            str
+
+        T_Lowercase str ->
+            str
+
+        T_Equal ->
+            "="
+
+        T_Indent indent ->
+            "\n" ++ String.repeat indent " "
+
+        T_Uppercase str ->
+            str
+
+        T_Export ->
+            "export"
+
+        T_Import ->
+            "import"
+
+        T_Scientific (IntegerBase n) Positive x ->
+            Natural.toString n ++ "e" ++ Natural.toString x
+
+        T_Scientific (IntegerBase n) Negative x ->
+            Natural.toString n ++ "e-" ++ Natural.toString x
+
+        T_Scientific (DecimalBase n m) Positive x ->
+            Natural.toString n
+                ++ "."
+                ++ Natural.toString m
+                ++ "e"
+                ++ Natural.toString x
+
+        T_Scientific (DecimalBase n m) Negative x ->
+            Natural.toString n
+                ++ "."
+                ++ Natural.toString m
+                ++ "e-"
+                ++ Natural.toString x
+
+        T_BinaryOperator operator ->
+            operatorToString operator
 
 
 
@@ -1340,6 +1473,16 @@ describeToken id =
         T_Number Base2 n ->
             "the binary number " ++ Natural.toBinaryString n
 
+        T_Scientific base sign exponent ->
+            "the number in scientific notation "
+                ++ scientificToString base
+                ++ (if sign == Negative then
+                        "e-"
+
+                    else
+                        "e"
+                   )
+
         T_Lowercase str ->
             "the word " ++ str
 
@@ -1363,6 +1506,16 @@ describeToken id =
 
         T_BinaryOperator operator ->
             "the " ++ operatorToString operator ++ " operator"
+
+
+scientificToString : ScientificNumber -> String
+scientificToString number =
+    case number of
+        IntegerBase n ->
+            Natural.toString n
+
+        DecimalBase n m ->
+            Natural.toString n ++ "." ++ Natural.toString m
 
 
 operatorToString : Operator -> String

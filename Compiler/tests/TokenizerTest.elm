@@ -2,7 +2,17 @@ module TokenizerTest exposing (..)
 
 import Expect
 import Fuzz exposing (Fuzzer)
-import Main exposing (Base(..), Id(..), Token, tokenize)
+import Main
+    exposing
+        ( Base(..)
+        , Id(..)
+        , Operator(..)
+        , ScientificNumber(..)
+        , Sign(..)
+        , Token
+        , tokenIdToString
+        , tokenize
+        )
 import Natural exposing (Natural)
 import Test exposing (Test)
 
@@ -29,13 +39,13 @@ listToString list =
             ""
 
         ( n, (T_Indent _) as tokenId ) :: rest ->
-            listToStringHelp (String.repeat n " " ++ toString tokenId) rest
+            listToStringHelp (String.repeat n " " ++ tokenIdToString tokenId) rest
 
         [ ( n, tokenId ) ] ->
-            String.repeat n " " ++ toString tokenId
+            String.repeat n " " ++ tokenIdToString tokenId
 
         ( n, tokenId ) :: xs ->
-            listToStringHelp (String.repeat n " " ++ toString tokenId ++ " ") xs
+            listToStringHelp (String.repeat n " " ++ tokenIdToString tokenId ++ " ") xs
 
 
 listToStringHelp : String -> List Token -> String
@@ -45,10 +55,10 @@ listToStringHelp acc list =
             acc
 
         ( _, (T_Indent _) as tokenId ) :: xs ->
-            listToStringHelp (acc ++ toString tokenId) xs
+            listToStringHelp (acc ++ tokenIdToString tokenId) xs
 
         ( _, tokenId ) :: xs ->
-            listToStringHelp (acc ++ toString tokenId ++ " ") xs
+            listToStringHelp (acc ++ tokenIdToString tokenId ++ " ") xs
 
 
 tokens : Fuzzer (List Token)
@@ -121,18 +131,70 @@ tokenLength token =
         T_Import ->
             6
 
+        T_Scientific (IntegerBase n) Positive m ->
+            String.length (Natural.toString n)
+                + String.length (Natural.toString m)
+                + 1
+
+        T_Scientific (IntegerBase n) Negative m ->
+            String.length (Natural.toString n)
+                + String.length (Natural.toString m)
+                + 2
+
+        T_Scientific (DecimalBase n m) Positive x ->
+            String.length (Natural.toString n)
+                + String.length (Natural.toString m)
+                + String.length (Natural.toString x)
+                + 2
+
+        T_Scientific (DecimalBase n m) Negative x ->
+            String.length (Natural.toString n)
+                + String.length (Natural.toString m)
+                + String.length (Natural.toString x)
+                + 3
+
+        T_BinaryOperator Add ->
+            1
+
+        T_BinaryOperator Subtract ->
+            1
+
+        T_BinaryOperator Multiply ->
+            1
+
+        T_BinaryOperator Divide ->
+            1
+
+        T_BinaryOperator Power ->
+            1
+
 
 id : Fuzzer Id
 id =
     Fuzz.oneOf
         [ Fuzz.map2 T_Number baseFuzzer natural
         , Fuzz.map2 T_Decimal natural natural
+        , Fuzz.map3 T_Scientific scientificBase sign natural
         , Fuzz.map T_Lowercase lowercaseWord
         , Fuzz.map T_Uppercase uppercaseWord
         , Fuzz.constant T_Equal
         , Fuzz.constant T_Import
         , Fuzz.constant T_Export
+        , Fuzz.map T_BinaryOperator operatorFuzzer
         ]
+
+
+scientificBase : Fuzzer ScientificNumber
+scientificBase =
+    Fuzz.oneOf
+        [ Fuzz.map IntegerBase natural
+        , Fuzz.map2 DecimalBase natural natural
+        ]
+
+
+sign : Fuzzer Sign
+sign =
+    Fuzz.oneOfValues [ Positive, Negative ]
 
 
 baseFuzzer : Fuzzer Base
@@ -145,6 +207,17 @@ baseFuzzer =
         ]
 
 
+operatorFuzzer : Fuzzer Operator
+operatorFuzzer =
+    Fuzz.oneOfValues
+        [ Add
+        , Subtract
+        , Multiply
+        , Divide
+        , Power
+        ]
+
+
 natural : Fuzzer Natural
 natural =
     Fuzz.map Natural.fromSafeInt positiveInt
@@ -153,46 +226,6 @@ natural =
 positiveInt : Fuzzer Int
 positiveInt =
     Fuzz.intRange 0 9999
-
-
-toString : Id -> String
-toString t =
-    case t of
-        T_Decimal before after ->
-            Natural.toString before ++ "." ++ Natural.toString after
-
-        T_Number Base16 n ->
-            "0x" ++ Natural.toHexString n
-
-        T_Number Base10 n ->
-            Natural.toString n
-
-        T_Number Base8 n ->
-            "0o" ++ Natural.toOctalString n
-
-        T_Number Base2 n ->
-            "0b" ++ Natural.toBinaryString n
-
-        T_Illegal str ->
-            str
-
-        T_Lowercase str ->
-            str
-
-        T_Equal ->
-            "="
-
-        T_Indent indent ->
-            "\n" ++ String.repeat indent " "
-
-        T_Uppercase str ->
-            str
-
-        T_Export ->
-            "export"
-
-        T_Import ->
-            "import"
 
 
 max : Int
