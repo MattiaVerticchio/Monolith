@@ -10,6 +10,7 @@ import Main
         , ScientificNumber(..)
         , Sign(..)
         , Token
+        , toKeyword
         , tokenIdToString
         , tokenize
         )
@@ -17,19 +18,54 @@ import Natural exposing (Natural)
 import Test exposing (Test)
 
 
+
+{-
+   General token fuzzer. The shortest list that gives all the information to
+   check if the tokenizer is working correctly has two tokens.
+
+   The input:
+       randomSpace1 ++ Token 1 ++ randomSpace2 ++ Token 2
+
+   Should give back:
+       Indent randomSpace1, Token 1, Token 2 (with start based on randomSpace2)
+-}
+
+
 suite : Test
 suite =
-    Test.fuzz tokens "Generate and tokenize random values" <|
-        \generated ->
+    Test.fuzz fuzzer "Generate and tokenize random values" <|
+        \{ startSpaces, token1, middleSpaces, token2 } ->
             let
                 rendered : String
                 rendered =
-                    listToString generated
+                    String.repeat startSpaces " "
+                        ++ tokenIdToString token1
+                        ++ String.repeat middleSpaces " "
+                        ++ tokenIdToString token2
+
+                tokens : List Token
+                tokens =
+                    [ ( 0, T_Indent startSpaces )
+                    , ( startSpaces, token1 )
+                    , ( startSpaces + tokenLength token1 + middleSpaces
+                      , token2
+                      )
+                    ]
             in
-            tokenize rendered
-                -- Drop the first indent for now
-                |> List.drop 1
-                |> Expect.equal generated
+            tokenize rendered |> Expect.equal tokens
+
+
+type alias Input =
+    { startSpaces : Int
+    , token1 : Id
+    , middleSpaces : Int
+    , token2 : Id
+    }
+
+
+fuzzer : Fuzzer Input
+fuzzer =
+    Fuzz.map4 Input positiveInt id strictlyPositiveInt id
 
 
 listToString : List Token -> String
@@ -59,11 +95,6 @@ listToStringHelp acc list =
 
         ( _, tokenId ) :: xs ->
             listToStringHelp (acc ++ tokenIdToString tokenId ++ " ") xs
-
-
-tokens : Fuzzer (List Token)
-tokens =
-    Fuzz.list id |> Fuzz.map (idsToTokens 0 [])
 
 
 idsToTokens : Int -> List Token -> List Id -> List Token
@@ -228,6 +259,11 @@ positiveInt =
     Fuzz.intRange 0 9999
 
 
+strictlyPositiveInt : Fuzzer Int
+strictlyPositiveInt =
+    Fuzz.intRange 1 9999
+
+
 max : Int
 max =
     2147483647
@@ -241,10 +277,7 @@ uppercaseWord =
 lowercaseWord : Fuzzer String
 lowercaseWord =
     Fuzz.map2 String.cons lowercaseChar alphaNum
-
-
-
--- |> Fuzz.filter (\x -> toKeyword x == Nothing)
+        |> Fuzz.filter (\x -> toKeyword x == Nothing)
 
 
 alphaNum : Fuzzer String

@@ -11,6 +11,7 @@ module Main exposing
     , Token
     , operatorToString
     , run
+    , toKeyword
     , tokenIdToString
     , tokenize
     )
