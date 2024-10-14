@@ -1,20 +1,4 @@
-module Main exposing
-    ( Base(..)
-    , Declaration
-    , Exports
-    , File
-    , Id(..)
-    , Imports
-    , Operator(..)
-    , ScientificNumber(..)
-    , Sign(..)
-    , Token
-    , operatorToString
-    , run
-    , toKeyword
-    , tokenIdToString
-    , tokenize
-    )
+module Main exposing (..)
 
 import BackendTask as Task exposing (BackendTask)
 import BackendTask.Custom as Custom
@@ -590,7 +574,7 @@ tokenIdToString id =
             "0x" ++ Natural.toHexString n
 
         T_Number Base10 n ->
-            Natural.toString n
+            Natural.toDecimalString n
 
         T_Number Base8 n ->
             "0o" ++ Natural.toOctalString n
@@ -794,9 +778,13 @@ type DeclarationParsingError
 
 
 type Expression
-    = Number Int Base Natural
-    | Decimal Int Natural Natural
+    = Literal Int Literal
     | Binary Int Operator Expression Expression
+
+
+type Literal
+    = Number Base Natural
+    | Decimal Natural Natural
 
 
 type ExpressionParsingError
@@ -806,25 +794,32 @@ type ExpressionParsingError
 
 parseFile : String -> List Token -> BackendTask FatalError File
 parseFile name tokens =
+    case parseFileResult name tokens of
+        Err e ->
+            FatalError.fromString e |> Task.fail
+
+        Ok file ->
+            Task.succeed file
+
+
+parseFileResult : String -> List Token -> Result String File
+parseFileResult name tokens =
     case parseExports tokens of
         Error e ->
-            exportParsingErrorToString e |> FatalError.fromString |> Task.fail
+            exportParsingErrorToString e |> Err
 
         Parsed exports afterExports ->
             case parseImports afterExports of
                 Error e ->
-                    Debug.toString e |> FatalError.fromString |> Task.fail
+                    Err e
 
                 Parsed imports afterImports ->
                     case parseDeclarations afterImports of
                         Parsed declarations _ ->
-                            File name exports imports declarations
-                                |> Task.succeed
+                            File name exports imports declarations |> Ok
 
                         Error e ->
-                            errorToString e
-                                |> FatalError.fromString
-                                |> Task.fail
+                            errorToString e |> Err
 
 
 type ExportParsingError
@@ -995,10 +990,28 @@ parseLeftExpression : List Token -> Parser ExpressionParsingError Expression
 parseLeftExpression tokens =
     case tokens of
         ( i, T_Number b n ) :: rest ->
-            Parsed (Number i b n) rest
+            let
+                literal : Literal
+                literal =
+                    Number b n
+
+                expression : Expression
+                expression =
+                    Literal i literal
+            in
+            Parsed expression rest
 
         ( i, T_Decimal before after ) :: rest ->
-            Parsed (Decimal i before after) rest
+            let
+                literal : Literal
+                literal =
+                    Decimal before after
+
+                expression : Expression
+                expression =
+                    Literal i literal
+            in
+            Parsed expression rest
 
         ( i, unexpected ) :: _ ->
             UnexpectedTokenForExpression i unexpected |> Error
@@ -1245,8 +1258,12 @@ type alias JsDeclaration =
 
 
 type JsExpression
-    = JsNumber Natural (Maybe Natural)
+    = JsLiteral JsLiteral
     | JsBinary Operator JsExpression JsExpression
+
+
+type JsLiteral
+    = JsNumber Natural (Maybe Natural)
 
 
 fileToJs : File -> List JsDeclaration
@@ -1264,14 +1281,21 @@ declarationToJs declaration =
 expressionToJs : Expression -> JsExpression
 expressionToJs expression =
     case expression of
-        Number _ _ n ->
-            JsNumber n Nothing
-
-        Decimal _ before after ->
-            JsNumber before (Just after)
+        Literal _ literal ->
+            JsLiteral (literalToJs literal)
 
         Binary _ operator left right ->
             JsBinary operator (expressionToJs left) (expressionToJs right)
+
+
+literalToJs : Literal -> JsLiteral
+literalToJs literal =
+    case literal of
+        Number _ n ->
+            JsNumber n Nothing
+
+        Decimal before after ->
+            JsNumber before (Just after)
 
 
 
@@ -1279,8 +1303,48 @@ expressionToJs expression =
 
 
 fileToString : File -> String
-fileToString file =
-    List.map declarationToString file.declarations |> String.join "\n\n"
+fileToString { exports, imports, declarations } =
+    let
+        renderedDeclarations : String
+        renderedDeclarations =
+            List.map declarationToString declarations |> String.join "\n\n"
+    in
+    exportsToString exports ++ importsToString imports ++ renderedDeclarations
+
+
+exportsToString : Exports -> String
+exportsToString exports =
+    if Set.isEmpty exports then
+        ""
+
+    else
+        Set.foldl (\el acc -> acc ++ "\n    " ++ el) "export" exports
+            ++ "\n\n"
+
+
+importsToString : Imports -> String
+importsToString imports =
+    if Dict.isEmpty imports then
+        ""
+
+    else
+        Dict.foldl
+            (\moduleName exposedFunctions acc ->
+                acc
+                    ++ "\n    "
+                    ++ moduleName
+                    ++ Set.foldl
+                        (\exposedFunction exposedAcc ->
+                            exposedAcc
+                                ++ "\n        "
+                                ++ exposedFunction
+                        )
+                        ""
+                        exposedFunctions
+            )
+            "import"
+            imports
+            ++ "\n\n"
 
 
 declarationToString : Declaration -> String
@@ -1291,20 +1355,8 @@ declarationToString declaration =
 expressionToString : Expression -> String
 expressionToString expression =
     case expression of
-        Number _ Base16 n ->
-            Natural.toHexString n
-
-        Number _ Base10 n ->
-            Natural.toString n
-
-        Number _ Base8 n ->
-            Natural.toOctalString n
-
-        Number _ Base2 n ->
-            Natural.toBinaryString n
-
-        Decimal _ before after ->
-            Natural.toString before ++ "." ++ Natural.toString after
+        Literal _ literal ->
+            literalToString literal
 
         Binary _ operator a b ->
             {-
@@ -1392,6 +1444,25 @@ expressionToString expression =
             left ++ " " ++ operatorToString operator ++ " " ++ right
 
 
+literalToString : Literal -> String
+literalToString literal =
+    case literal of
+        Number Base16 n ->
+            "0x" ++ Natural.toHexString n
+
+        Number Base10 n ->
+            Natural.toDecimalString n
+
+        Number Base8 n ->
+            "0o" ++ Natural.toOctalString n
+
+        Number Base2 n ->
+            "0b" ++ Natural.toBinaryString n
+
+        Decimal before after ->
+            Natural.toString before ++ "." ++ Natural.toString after
+
+
 jsFileToString : List JsDeclaration -> String
 jsFileToString =
     List.map jsDeclarationToString >> String.join "\n\n"
@@ -1408,14 +1479,21 @@ jsDeclarationToString declaration =
 jsExpressionToString : JsExpression -> String
 jsExpressionToString expression =
     case expression of
+        JsLiteral literal ->
+            jsLiteralToString literal
+
+        JsBinary _ _ _ ->
+            Debug.todo "branch 'JsBinary _ _ _' not implemented"
+
+
+jsLiteralToString : JsLiteral -> String
+jsLiteralToString literal =
+    case literal of
         JsNumber n Nothing ->
             Natural.toString n
 
         JsNumber before (Just after) ->
             Natural.toString before ++ "." ++ Natural.toString after
-
-        JsBinary _ _ _ ->
-            Debug.todo "branch 'JsBinary _ _ _' not implemented"
 
 
 
