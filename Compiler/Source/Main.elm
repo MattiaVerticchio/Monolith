@@ -139,10 +139,8 @@ type alias Token =
 
 
 type Id
-    = T_Number Base Natural
+    = T_Literal Literal
       -- before.after : 3.14 -> before = 3, after = 14
-    | T_Decimal Natural Natural
-    | T_Scientific ScientificNumber Sign Natural
     | T_Lowercase String
     | T_Uppercase String
     | T_Equal
@@ -300,22 +298,22 @@ t acc i src remaining =
                     chunk =
                         String.slice i end src
 
-                    maybeId : Maybe Id
-                    maybeId =
+                    maybeLiteral : Maybe Literal
+                    maybeLiteral =
                         if String.startsWith "0b" chunk || String.startsWith "0B" chunk then
                             String.slice 2 length chunk
                                 |> Natural.fromBinaryString
-                                |> Maybe.map (T_Number Base2)
+                                |> Maybe.map (Number Base2)
 
                         else if String.startsWith "0o" chunk || String.startsWith "0O" chunk then
                             String.slice 2 length chunk
                                 |> Natural.fromOctalString
-                                |> Maybe.map (T_Number Base8)
+                                |> Maybe.map (Number Base8)
 
                         else if String.startsWith "0x" chunk || String.startsWith "0X" chunk then
                             String.slice 2 length chunk
                                 |> Natural.fromHexString
-                                |> Maybe.map (T_Number Base16)
+                                |> Maybe.map (Number Base16)
 
                         else
                             case String.split "e" chunk of
@@ -330,7 +328,7 @@ t acc i src remaining =
                                             else
                                                 ( Positive, after )
                                     in
-                                    Maybe.map3 T_Scientific
+                                    Maybe.map3 Scientific
                                         (parseScientificNumber before)
                                         (Just sign)
                                         (Natural.fromDecimalString newAfter)
@@ -338,17 +336,17 @@ t acc i src remaining =
                                 _ ->
                                     case parseScientificNumber chunk of
                                         Just (IntegerBase n) ->
-                                            T_Number Base10 n |> Just
+                                            Number Base10 n |> Just
 
                                         Just (DecimalBase n m) ->
-                                            T_Decimal n m |> Just
+                                            Decimal n m |> Just
 
                                         _ ->
                                             Nothing
                 in
-                case maybeId of
-                    Just id ->
-                        t (( i, id ) :: acc) end src afterEnd
+                case maybeLiteral of
+                    Just literal ->
+                        t (( i, T_Literal literal ) :: acc) end src afterEnd
 
                     Nothing ->
                         let
@@ -567,20 +565,8 @@ chompUppercase start length characters src =
 tokenIdToString : Id -> String
 tokenIdToString id =
     case id of
-        T_Decimal before after ->
-            Natural.toString before ++ "." ++ Natural.toString after
-
-        T_Number Base16 n ->
-            "0x" ++ Natural.toHexString n
-
-        T_Number Base10 n ->
-            Natural.toDecimalString n
-
-        T_Number Base8 n ->
-            "0o" ++ Natural.toOctalString n
-
-        T_Number Base2 n ->
-            "0b" ++ Natural.toBinaryString n
+        T_Literal literal ->
+            literalToString literal
 
         T_Illegal str ->
             str
@@ -602,26 +588,6 @@ tokenIdToString id =
 
         T_Import ->
             "import"
-
-        T_Scientific (IntegerBase n) Positive x ->
-            Natural.toString n ++ "e" ++ Natural.toString x
-
-        T_Scientific (IntegerBase n) Negative x ->
-            Natural.toString n ++ "e-" ++ Natural.toString x
-
-        T_Scientific (DecimalBase n m) Positive x ->
-            Natural.toString n
-                ++ "."
-                ++ Natural.toString m
-                ++ "e"
-                ++ Natural.toString x
-
-        T_Scientific (DecimalBase n m) Negative x ->
-            Natural.toString n
-                ++ "."
-                ++ Natural.toString m
-                ++ "e-"
-                ++ Natural.toString x
 
         T_BinaryOperator operator ->
             operatorToString operator
@@ -785,6 +751,7 @@ type Expression
 type Literal
     = Number Base Natural
     | Decimal Natural Natural
+    | Scientific ScientificNumber Sign Natural
 
 
 type ExpressionParsingError
@@ -989,24 +956,8 @@ pratt limit tokens =
 parseLeftExpression : List Token -> Parser ExpressionParsingError Expression
 parseLeftExpression tokens =
     case tokens of
-        ( i, T_Number b n ) :: rest ->
+        ( i, T_Literal literal ) :: rest ->
             let
-                literal : Literal
-                literal =
-                    Number b n
-
-                expression : Expression
-                expression =
-                    Literal i literal
-            in
-            Parsed expression rest
-
-        ( i, T_Decimal before after ) :: rest ->
-            let
-                literal : Literal
-                literal =
-                    Decimal before after
-
                 expression : Expression
                 expression =
                     Literal i literal
@@ -1264,6 +1215,7 @@ type JsExpression
 
 type JsLiteral
     = JsNumber Natural (Maybe Natural)
+    | JsScientificNumber ScientificNumber Sign Natural
 
 
 fileToJs : File -> List JsDeclaration
@@ -1296,6 +1248,9 @@ literalToJs literal =
 
         Decimal before after ->
             JsNumber before (Just after)
+
+        Scientific _ _ _ ->
+            Debug.todo "branch 'Scientific _ _ _' not implemented"
 
 
 
@@ -1462,6 +1417,26 @@ literalToString literal =
         Decimal before after ->
             Natural.toString before ++ "." ++ Natural.toString after
 
+        Scientific (IntegerBase n) Positive x ->
+            Natural.toString n ++ "e" ++ Natural.toString x
+
+        Scientific (IntegerBase n) Negative x ->
+            Natural.toString n ++ "e-" ++ Natural.toString x
+
+        Scientific (DecimalBase n m) Positive x ->
+            Natural.toString n
+                ++ "."
+                ++ Natural.toString m
+                ++ "e"
+                ++ Natural.toString x
+
+        Scientific (DecimalBase n m) Negative x ->
+            Natural.toString n
+                ++ "."
+                ++ Natural.toString m
+                ++ "e-"
+                ++ Natural.toString x
+
 
 jsFileToString : List JsDeclaration -> String
 jsFileToString =
@@ -1494,6 +1469,26 @@ jsLiteralToString literal =
 
         JsNumber before (Just after) ->
             Natural.toString before ++ "." ++ Natural.toString after
+
+        JsScientificNumber (IntegerBase n) Positive x ->
+            Natural.toString n ++ "e" ++ Natural.toString x
+
+        JsScientificNumber (IntegerBase n) Negative x ->
+            Natural.toString n ++ "e-" ++ Natural.toString x
+
+        JsScientificNumber (DecimalBase n m) Positive x ->
+            Natural.toString n
+                ++ "."
+                ++ Natural.toString m
+                ++ "e"
+                ++ Natural.toString x
+
+        JsScientificNumber (DecimalBase n m) Negative x ->
+            Natural.toString n
+                ++ "."
+                ++ Natural.toString m
+                ++ "e-"
+                ++ Natural.toString x
 
 
 
@@ -1534,33 +1529,8 @@ expressionParsingErrorToString error =
 describeToken : Id -> String
 describeToken id =
     case id of
-        T_Decimal before after ->
-            "the decimal number "
-                ++ Natural.toString before
-                ++ "."
-                ++ Natural.toString after
-
-        T_Number Base16 n ->
-            "the hexadecimal number " ++ Natural.toHexString n
-
-        T_Number Base10 n ->
-            "the number " ++ Natural.toString n
-
-        T_Number Base8 n ->
-            "the octal number " ++ Natural.toOctalString n
-
-        T_Number Base2 n ->
-            "the binary number " ++ Natural.toBinaryString n
-
-        T_Scientific base sign exponent ->
-            "the number in scientific notation "
-                ++ scientificToString base
-                ++ (if sign == Negative then
-                        "e-"
-
-                    else
-                        "e"
-                   )
+        T_Literal literal ->
+            describeLiteral literal
 
         T_Lowercase str ->
             "the word " ++ str
@@ -1585,6 +1555,28 @@ describeToken id =
 
         T_BinaryOperator operator ->
             "the " ++ operatorToString operator ++ " operator"
+
+
+describeLiteral : Literal -> String
+describeLiteral literal =
+    case literal of
+        Decimal _ _ ->
+            "the decimal number " ++ literalToString literal
+
+        Number Base16 _ ->
+            "the hexadecimal number " ++ literalToString literal
+
+        Number Base10 _ ->
+            "the number " ++ literalToString literal
+
+        Number Base8 _ ->
+            "the octal number " ++ literalToString literal
+
+        Number Base2 _ ->
+            "the binary number " ++ literalToString literal
+
+        Scientific _ _ _ ->
+            "the number in scientific notation " ++ literalToString literal
 
 
 scientificToString : ScientificNumber -> String
