@@ -146,6 +146,8 @@ type Id
     | T_Equal
     | T_Export
     | T_Import
+    | T_OpenParenthesis
+    | T_CloseParenthesis
     | T_Indent Int
     | T_Illegal String
     | T_BinaryOperator Operator
@@ -200,17 +202,13 @@ t acc i src remaining =
                 ( indent, afterIndent ) =
                     getIndent xs
 
-                afterNewline : Int
-                afterNewline =
-                    i + 1
-
                 token : Token
                 token =
-                    ( afterNewline, T_Indent indent )
+                    ( i, T_Indent indent )
 
                 afterSpace : Int
                 afterSpace =
-                    afterNewline + indent
+                    i + indent + 1
             in
             t (token :: acc) afterSpace src afterIndent
 
@@ -219,6 +217,12 @@ t acc i src remaining =
 
         '=' :: xs ->
             t (( i, T_Equal ) :: acc) (i + 1) src xs
+
+        '(' :: xs ->
+            t (( i, T_OpenParenthesis ) :: acc) (i + 1) src xs
+
+        ')' :: xs ->
+            t (( i, T_CloseParenthesis ) :: acc) (i + 1) src xs
 
         '+' :: xs ->
             t (( i, T_BinaryOperator Add ) :: acc) (i + 1) src xs
@@ -592,6 +596,12 @@ tokenIdToString id =
         T_BinaryOperator operator ->
             operatorToString operator
 
+        T_OpenParenthesis ->
+            "("
+
+        T_CloseParenthesis ->
+            ")"
+
 
 
 -- Helpers
@@ -745,7 +755,7 @@ type DeclarationParsingError
 
 type Expression
     = Literal Int Literal
-    | Binary Int Operator Expression Expression
+    | Binary Operator Expression Expression
 
 
 type Literal
@@ -757,6 +767,8 @@ type Literal
 type ExpressionParsingError
     = UnexpectedTokenForExpression Int Id
     | EndOfFileDuringExpression
+    | ExpectingIndentAtLeast { position : Int, minIndent : Int, found : Int }
+    | MissingClosingParenthesis Int
 
 
 parseFile : String -> List Token -> BackendTask FatalError File
@@ -916,7 +928,7 @@ parseDeclarationsHelp acc tokens =
             parseDeclarationsHelp acc rest
 
         ( _, T_Indent 0 ) :: ( start, T_Lowercase str ) :: ( _, T_Equal ) :: afterEqual ->
-            case parseExpression afterEqual of
+            case parseExpression 1 afterEqual of
                 Parsed exp afterExp ->
                     parseDeclarationsHelp
                         (Declaration str exp start :: acc)
@@ -938,23 +950,50 @@ parseDeclarationsHelp acc tokens =
             UnexpectedToken unexpected |> Error
 
 
-parseExpression : List Token -> Parser ExpressionParsingError Expression
-parseExpression tokens =
-    pratt 0 tokens
+parseExpression : Int -> List Token -> Parser ExpressionParsingError Expression
+parseExpression indent tokens =
+    pratt indent 0 tokens
 
 
-pratt : Int -> List Token -> Parser ExpressionParsingError Expression
-pratt limit tokens =
-    case parseLeftExpression tokens of
+pratt : Int -> Int -> List Token -> Parser ExpressionParsingError Expression
+pratt indent limit tokens =
+    case parseLeftExpression indent tokens of
         Error e ->
             Error e
 
         Parsed left afterLeft ->
-            prattLoop limit left afterLeft
+            prattLoop indent limit left afterLeft
 
 
-parseLeftExpression : List Token -> Parser ExpressionParsingError Expression
-parseLeftExpression tokens =
+parseLeftExpression : Int -> List Token -> Parser ExpressionParsingError Expression
+parseLeftExpression indent tokens =
+    case tokens of
+        ( _, T_Indent _ ) :: ((( _, T_Indent _ ) :: _) as rest) ->
+            parseLeftExpression indent rest
+
+        [ ( _, T_Indent _ ) ] ->
+            Error EndOfFileDuringExpression
+
+        ( i, T_Indent found ) :: rest ->
+            if found >= indent then
+                parseLeftExpressionAfterIndent rest
+
+            else
+                ExpectingIndentAtLeast
+                    { position = i
+                    , minIndent = indent
+                    , found = found
+                    }
+                    |> Error
+
+        [] ->
+            Error EndOfFileDuringExpression
+
+        _ ->
+            parseLeftExpressionAfterIndent tokens
+
+
+parseLeftExpressionAfterIndent tokens =
     case tokens of
         ( i, T_Literal literal ) :: rest ->
             let
@@ -964,6 +1003,17 @@ parseLeftExpression tokens =
             in
             Parsed expression rest
 
+        ( i, T_OpenParenthesis ) :: rest ->
+            case parseExpression 0 rest of
+                Error e ->
+                    Error e
+
+                Parsed inside (( _, T_CloseParenthesis ) :: afterClosing) ->
+                    Parsed inside afterClosing
+
+                Parsed _ _ ->
+                    MissingClosingParenthesis i |> Error
+
         ( i, unexpected ) :: _ ->
             UnexpectedTokenForExpression i unexpected |> Error
 
@@ -971,10 +1021,10 @@ parseLeftExpression tokens =
             Error EndOfFileDuringExpression
 
 
-prattLoop : Int -> Expression -> List Token -> Parser ExpressionParsingError Expression
-prattLoop limit left afterLeft =
+prattLoop : Int -> Int -> Expression -> List Token -> Parser ExpressionParsingError Expression
+prattLoop indent limit left afterLeft =
     case afterLeft of
-        ( i, T_BinaryOperator operator ) :: afterOperator ->
+        ( _, T_BinaryOperator operator ) :: afterOperator ->
             let
                 { associativity, precedence } =
                     operatorInfo operator
@@ -989,9 +1039,14 @@ prattLoop limit left afterLeft =
                         else
                             precedence
                 in
-                case pratt finalPrecedence afterOperator of
+                case pratt indent finalPrecedence afterOperator of
                     Parsed right afterRight ->
-                        prattLoop limit (Binary i operator left right) afterRight
+                        let
+                            newLeft : Expression
+                            newLeft =
+                                Binary operator left right
+                        in
+                        prattLoop indent limit newLeft afterRight
 
                     Error e ->
                         Error e
@@ -1236,7 +1291,7 @@ expressionToJs expression =
         Literal _ literal ->
             JsLiteral (literalToJs literal)
 
-        Binary _ operator left right ->
+        Binary operator left right ->
             JsBinary operator (expressionToJs left) (expressionToJs right)
 
 
@@ -1313,7 +1368,7 @@ expressionToString expression =
         Literal _ literal ->
             literalToString literal
 
-        Binary _ operator a b ->
+        Binary operator a b ->
             {-
                 Formatting with precedence rules
 
@@ -1339,7 +1394,7 @@ expressionToString expression =
                 left : String
                 left =
                     case a of
-                        Binary _ op _ _ ->
+                        Binary op _ _ ->
                             let
                                 leftChild :
                                     { associativity : Associativity
@@ -1372,7 +1427,7 @@ expressionToString expression =
                 right : String
                 right =
                     case b of
-                        Binary _ op _ _ ->
+                        Binary op _ _ ->
                             let
                                 rightChild :
                                     { associativity : Associativity
@@ -1525,6 +1580,12 @@ expressionParsingErrorToString error =
         UnexpectedTokenForExpression _ token ->
             "I encountered " ++ describeToken token
 
+        ExpectingIndentAtLeast { minIndent } ->
+            "I was expecting some indentation, but there’s none"
+
+        MissingClosingParenthesis _ ->
+            "I was expecting a closing parenthesis, but I found none"
+
 
 describeToken : Id -> String
 describeToken id =
@@ -1555,6 +1616,12 @@ describeToken id =
 
         T_BinaryOperator operator ->
             "the " ++ operatorToString operator ++ " operator"
+
+        T_OpenParenthesis ->
+            "an open parenthesis"
+
+        T_CloseParenthesis ->
+            "a closing parenthesis"
 
 
 describeLiteral : Literal -> String
