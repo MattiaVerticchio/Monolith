@@ -170,6 +170,41 @@ parsingExpressions =
                             |> Expect.fail
 
 
+parsingNonIndentedExpressions : Test
+parsingNonIndentedExpressions =
+    Test.fuzz expressionFuzzer
+        "Generating and parsing random expressions that are not indented enough"
+    <|
+        \generated ->
+            let
+                rendered : String
+                rendered =
+                    expressionToString generated
+
+                tokenized : List Token
+                tokenized =
+                    tokenize rendered
+
+                parser : Parser ExpressionParsingError Expression
+                parser =
+                    parseExpression 1 tokenized
+            in
+            case parser of
+                Error e ->
+                    expressionParsingErrorToString e |> Expect.fail
+
+                Parsed parsedExpression _ ->
+                    if areExpressionsOk generated parsedExpression then
+                        Expect.pass
+
+                    else
+                        "Generated:\n"
+                            ++ rendered
+                            ++ "\nParsed:\n"
+                            ++ expressionToString parsedExpression
+                            |> Expect.fail
+
+
 areExpressionsOk : Expression -> Expression -> Bool
 areExpressionsOk a b =
     case ( a, b ) of
