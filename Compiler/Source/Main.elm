@@ -3,7 +3,6 @@ module Main exposing (..)
 import BackendTask as Task exposing (BackendTask)
 import BackendTask.Custom as Custom
 import BackendTask.File as File
-import BackendTask.Stream exposing (Error)
 import Dict exposing (Dict)
 import FatalError exposing (FatalError)
 import Json.Decode as Decode exposing (Decoder)
@@ -32,22 +31,50 @@ run =
     Script.withoutCliOptions compile
 
 
-compile : BackendTask FatalError ()
-compile =
-    readFiles path
-        |> Task.map filterFiles
-        |> Task.andThen readAndParseFiles
-        |> Task.andThen (Debug.toString >> Script.log)
-
-
 extension : String
 extension =
     ".🗿"
 
 
+compile : BackendTask FatalError ()
+compile =
+    getContent path
+        |> Task.map filterFiles
+        |> Task.andThen readFiles
+        |> Task.map tokenizeFiles
+        |> Task.andThen parseFiles
+        |> Task.andThen duplicatesAndExports
+        -- |> Task.andThen checkCyclicImports
+        -- |> Task.map topologicalSort
+        -- |> Task.andThen typeCheck
+        -- |> Task.map transformToJs
+        -- |> Task.andThen emitFile
+        |> Task.andThen (Debug.toString >> Script.log)
+
+
+
+-- Get the content of the source directory
+
+
 path : String
 path =
     "src"
+
+
+getContent : String -> BackendTask FatalError (List Dirent)
+getContent folder =
+    Custom.run "readFolder" (Encode.string folder) (Decode.list decodeDirent)
+        |> Task.allowFatal
+
+
+
+-- Keep files that end with the proper extension
+
+
+type alias Dirent =
+    { name : String
+    , parentPath : String
+    }
 
 
 filterFiles : List Dirent -> List String
@@ -61,18 +88,6 @@ filterFiles =
                 Nothing
 
 
-type alias Dirent =
-    { name : String
-    , parentPath : String
-    }
-
-
-readFiles : String -> BackendTask FatalError (List Dirent)
-readFiles folder =
-    Custom.run "readFolder" (Encode.string folder) (Decode.list decodeDirent)
-        |> Task.allowFatal
-
-
 decodeDirent : Decoder Dirent
 decodeDirent =
     Decode.map2 Dirent
@@ -80,24 +95,251 @@ decodeDirent =
         (Decode.field "parentPath" Decode.string)
 
 
-readAndParseFiles :
-    List String
+
+-- Read the files
+
+
+type alias RawFile =
+    { name : String
+    , content : String
+    }
+
+
+readFiles : List String -> BackendTask FatalError (List RawFile)
+readFiles files =
+    List.map
+        (\name ->
+            File.rawFile name
+                |> Task.map (\content -> { name = name, content = content })
+        )
+        files
+        |> Task.combine
+        |> Task.allowFatal
+
+
+
+-- Tokenize the files
+
+
+type alias TokenizedFile =
+    { name : String
+    , tokens : List Token
+    }
+
+
+tokenizeFiles : List RawFile -> List TokenizedFile
+tokenizeFiles =
+    List.map <| \{ name, content } -> { name = name, tokens = tokenize content }
+
+
+
+-- Parse the tokenized files
+
+
+type alias ParsedFile =
+    { name : String
+    , exports : Exports
+    , imports : Imports
+    , declarations :
+        -- The list is reversed
+        List Declaration
+    }
+
+
+parseFiles : List TokenizedFile -> BackendTask FatalError (List ParsedFile)
+parseFiles tokenized =
+    case
+        List.foldl
+            (\{ name, tokens } ( errors, ok ) ->
+                case parseFileResult name tokens of
+                    Err e ->
+                        ( e :: errors, ok )
+
+                    Ok parsed ->
+                        ( errors, parsed :: ok )
+            )
+            ( [], [] )
+            tokenized
+    of
+        ( [], parsed ) ->
+            Task.succeed parsed
+
+        ( errors, _ ) ->
+            String.join "\n" errors |> FatalError.fromString |> Task.fail
+
+
+
+-- Check the parsed files for function duplicates and undeclared exports
+
+
+type alias UnduplicatedFile =
+    { name : String
+    , imports : Imports
+    , functions :
+        Dict
+            String
+            { expression : Expression
+            , start : Int
+            , isExposed : Bool
+            }
+    }
+
+
+duplicatesAndExports : List ParsedFile -> BackendTask FatalError (List UnduplicatedFile)
+duplicatesAndExports files =
+    case
+        List.foldl
+            (\file ( errors, result ) ->
+                case
+                    checkForDuplicatedDeclarations file.exports
+                        Dict.empty
+                        Dict.empty
+                        file.declarations
+                of
+                    Err duplicates ->
+                        ( { name = file.name
+                          , duplicates = duplicates
+                          }
+                            :: errors
+                        , result
+                        )
+
+                    Ok ok ->
+                        ( errors
+                        , { name = file.name
+                          , imports = file.imports
+                          , functions = ok
+                          }
+                            :: result
+                        )
+            )
+            ( [], [] )
+            files
+    of
+        ( [], result ) ->
+            Task.succeed result
+
+        ( errors, _ ) ->
+            duplicatesToErrorString errors
+                |> FatalError.fromString
+                |> Task.fail
+
+
+duplicatesToErrorString : List { name : String, duplicates : ( Dict String Int, Exports ) } -> String
+duplicatesToErrorString errors =
+    List.foldl
+        (\file mainAcc ->
+            let
+                ( duplicates, exports ) =
+                    file.duplicates
+
+                duplicatesError : String
+                duplicatesError =
+                    if Dict.isEmpty duplicates then
+                        ""
+
+                    else
+                        Dict.foldl (\k _ acc -> acc ++ "\n    " ++ k)
+                            "\n  Duplicated functions:"
+                            duplicates
+
+                exportsError : String
+                exportsError =
+                    if Set.isEmpty exports then
+                        ""
+
+                    else
+                        Set.foldl (\k acc -> acc ++ "\n    " ++ k)
+                            "\n  Undeclared exports:"
+                            exports
+            in
+            mainAcc
+                ++ "\n"
+                ++ file.name
+                ++ "has:"
+                ++ duplicatesError
+                ++ exportsError
+        )
+        ""
+        errors
+
+
+checkForDuplicatedDeclarations :
+    Exports
+    -> Dict String Int
     ->
-        BackendTask
-            FatalError
-            (List
-                { name : String
-                , exports : Exports
-                , imports : Imports
-                , declarations : Dict String Declaration
+        Dict
+            String
+            { expression : Expression
+            , start : Int
+            , isExposed : Bool
+            }
+    -> List Declaration
+    ->
+        Result
+            ( Dict String Int, Exports )
+            (Dict
+                String
+                { expression : Expression
+                , start : Int
+                , isExposed : Bool
                 }
             )
-readAndParseFiles files =
-    List.map (readAndParseFile >> Task.andThen checkDuplicatedDeclarations) files
-        |> Task.combine
+checkForDuplicatedDeclarations exports duplicates declarations remaining =
+    case remaining of
+        [] ->
+            if Dict.isEmpty duplicates && Set.isEmpty exports then
+                Ok declarations
+
+            else
+                Err ( duplicates, exports )
+
+        x :: xs ->
+            case Dict.get x.name declarations of
+                Nothing ->
+                    let
+                        newDeclarations :
+                            Dict
+                                String
+                                { expression : Expression
+                                , start : Int
+                                , isExposed : Bool
+                                }
+                        newDeclarations =
+                            Dict.insert x.name
+                                { expression = x.expression
+                                , start = x.start
+                                , isExposed = Set.member x.name exports
+                                }
+                                declarations
+                    in
+                    checkForDuplicatedDeclarations (Set.remove x.name exports)
+                        duplicates
+                        newDeclarations
+                        xs
+
+                Just _ ->
+                    let
+                        counter : Int
+                        counter =
+                            case Dict.get x.name duplicates of
+                                Nothing ->
+                                    2
+
+                                Just n ->
+                                    n + 1
+
+                        newDuplicates : Dict String Int
+                        newDuplicates =
+                            Dict.insert x.name counter duplicates
+                    in
+                    checkForDuplicatedDeclarations exports
+                        newDuplicates
+                        declarations
+                        xs
 
 
-readAndParseFile : String -> BackendTask FatalError File
+readAndParseFile : String -> BackendTask FatalError ParsedFile
 readAndParseFile filePath =
     let
         name : String
@@ -721,16 +963,6 @@ type Parser e a
     | Parsed a (List Token)
 
 
-type alias File =
-    { name : String
-    , exports : Exports
-    , imports : Imports
-    , declarations :
-        -- The list is reversed
-        List Declaration
-    }
-
-
 type alias Exports =
     Set String
 
@@ -771,7 +1003,7 @@ type ExpressionParsingError
     | MissingClosingParenthesis Int
 
 
-parseFile : String -> List Token -> BackendTask FatalError File
+parseFile : String -> List Token -> BackendTask FatalError ParsedFile
 parseFile name tokens =
     case parseFileResult name tokens of
         Err e ->
@@ -781,7 +1013,7 @@ parseFile name tokens =
             Task.succeed file
 
 
-parseFileResult : String -> List Token -> Result String File
+parseFileResult : String -> List Token -> Result String ParsedFile
 parseFileResult name tokens =
     case parseExports tokens of
         Error e ->
@@ -795,7 +1027,7 @@ parseFileResult name tokens =
                 Parsed imports afterImports ->
                     case parseDeclarations afterImports of
                         Parsed declarations _ ->
-                            File name exports imports declarations |> Ok
+                            ParsedFile name exports imports declarations |> Ok
 
                         Error e ->
                             errorToString e |> Err
@@ -1096,78 +1328,6 @@ operatorInfo operator =
 
 
 
--- Check for duplicated declarations
-
-
-checkDuplicatedDeclarations :
-    { name : String
-    , exports : Exports
-    , imports : Imports
-    , declarations : List Declaration
-    }
-    ->
-        BackendTask
-            FatalError
-            { name : String
-            , exports : Exports
-            , imports : Imports
-            , declarations : Dict String Declaration
-            }
-checkDuplicatedDeclarations file =
-    case checkDuplicatedDeclarationsHelp Dict.empty Dict.empty file.declarations of
-        Ok declarations ->
-            Task.succeed
-                { name = file.name
-                , exports = file.exports
-                , imports = file.imports
-                , declarations = declarations
-                }
-
-        Err duplicated ->
-            "Duplicated functions: "
-                ++ Debug.toString duplicated
-                |> FatalError.fromString
-                |> Task.fail
-
-
-checkDuplicatedDeclarationsHelp :
-    Dict String Declaration
-    -> Dict String Int
-    -> List Declaration
-    -> Result (Dict String Int) (Dict String Declaration)
-checkDuplicatedDeclarationsHelp acc duplicated remaining =
-    case remaining of
-        [] ->
-            if Dict.isEmpty duplicated then
-                Ok acc
-
-            else
-                Err duplicated
-
-        x :: xs ->
-            case Dict.get x.name acc of
-                Nothing ->
-                    checkDuplicatedDeclarationsHelp (Dict.insert x.name x acc)
-                        duplicated
-                        xs
-
-                Just _ ->
-                    let
-                        counter : Int
-                        counter =
-                            case Dict.get x.name duplicated of
-                                Nothing ->
-                                    2
-
-                                Just n ->
-                                    n + 1
-                    in
-                    checkDuplicatedDeclarationsHelp acc
-                        (Dict.insert x.name counter duplicated)
-                        xs
-
-
-
 -- Checking import cycles
 {-
 
@@ -1273,7 +1433,7 @@ type JsLiteral
     | JsScientificNumber ScientificNumber Sign Natural
 
 
-fileToJs : File -> List JsDeclaration
+fileToJs : ParsedFile -> List JsDeclaration
 fileToJs =
     .declarations >> List.map declarationToJs
 
@@ -1312,7 +1472,7 @@ literalToJs literal =
 -- Format
 
 
-fileToString : File -> String
+fileToString : ParsedFile -> String
 fileToString { exports, imports, declarations } =
     let
         renderedDeclarations : String
