@@ -39,7 +39,7 @@ h       = 6.626e-34
 million = 1e6
 ```
 
-### Math operators, precedence and associativity
+### Math operators
 
 ```
 expression = 4 + 5 - 9.4 * 2 / 5 ^ 3

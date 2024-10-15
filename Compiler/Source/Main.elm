@@ -39,7 +39,7 @@ extension =
 compile : BackendTask FatalError ()
 compile =
     getContent path
-        |> Task.map filterFiles
+        |> Task.map keepMonolithFiles
         |> Task.andThen readFiles
         |> Task.map tokenizeFiles
         |> Task.andThen parseFiles
@@ -77,12 +77,12 @@ type alias Dirent =
     }
 
 
-filterFiles : List Dirent -> List String
-filterFiles =
+keepMonolithFiles : List Dirent -> List Dirent
+keepMonolithFiles =
     List.filterMap <|
         \dirent ->
             if String.endsWith extension dirent.name then
-                dirent.parentPath ++ "/" ++ dirent.name |> Just
+                Just dirent
 
             else
                 Nothing
@@ -105,12 +105,19 @@ type alias RawFile =
     }
 
 
-readFiles : List String -> BackendTask FatalError (List RawFile)
+readFiles : List Dirent -> BackendTask FatalError (List RawFile)
 readFiles files =
     List.map
-        (\name ->
-            File.rawFile name
-                |> Task.map (\content -> { name = name, content = content })
+        (\file ->
+            File.rawFile (file.parentPath ++ "/" ++ file.name)
+                |> Task.map
+                    (\content ->
+                        { name =
+                            String.dropRight (String.length extension)
+                                file.name
+                        , content = content
+                        }
+                    )
         )
         files
         |> Task.combine
