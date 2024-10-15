@@ -179,7 +179,7 @@ parsingNonIndentedExpressions =
             let
                 rendered : String
                 rendered =
-                    expressionToString generated
+                    "  " ++ expressionToString generated
 
                 tokenized : List Token
                 tokenized =
@@ -187,22 +187,14 @@ parsingNonIndentedExpressions =
 
                 parser : Parser ExpressionParsingError Expression
                 parser =
-                    parseExpression 1 tokenized
+                    parseExpression 4 tokenized
             in
             case parser of
-                Error e ->
-                    expressionParsingErrorToString e |> Expect.fail
+                Error _ ->
+                    Expect.pass
 
-                Parsed parsedExpression _ ->
-                    if areExpressionsOk generated parsedExpression then
-                        Expect.pass
-
-                    else
-                        "Generated:\n"
-                            ++ rendered
-                            ++ "\nParsed:\n"
-                            ++ expressionToString parsedExpression
-                            |> Expect.fail
+                Parsed _ _ ->
+                    Expect.fail "This test should not parse any expression"
 
 
 areExpressionsOk : Expression -> Expression -> Bool
