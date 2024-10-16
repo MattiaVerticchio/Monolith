@@ -31,7 +31,7 @@ compile =
         |> Task.andThen parseFiles
         |> Task.andThen duplicatesAndExports
         |> Task.andThen checkImportCycles
-        -- |> Task.map topologicalSort
+        |> Task.map (orderModules "Main")
         -- |> Task.andThen typeCheck
         -- |> Task.map transformToJs
         -- |> Task.andThen emitFile
@@ -743,6 +743,83 @@ importCycleErrorToString error =
 
         ImportingUnexposedFunction { functionName } ->
             "You are importing " ++ functionName ++ " but it’s not exposed."
+
+
+
+-- Topological module sorting
+
+
+type alias OrderState =
+    { errors : List TopologicalError
+    , order : List String
+    , visited : Set String
+    }
+
+
+type TopologicalError
+    = InternalErrorModuleNotFound String
+
+
+orderModules :
+    String
+    -> Dict String UnduplicatedFile
+    ->
+        BackendTask
+            FatalError
+            { order : List String, modules : Dict String UnduplicatedFile }
+orderModules entrypoint modules =
+    let
+        { errors, order } =
+            orderModulesHelp entrypoint
+                modules
+                { errors = [], order = [], visited = Set.empty }
+    in
+    if errors == [] then
+        Task.succeed { order = List.reverse order, modules = modules }
+
+    else
+        List.foldl (\el acc -> acc ++ "\n" ++ topologicalErrorToString el)
+            "Errors:"
+            errors
+            |> FatalError.fromString
+            |> Task.fail
+
+
+topologicalErrorToString : TopologicalError -> String
+topologicalErrorToString error =
+    case error of
+        InternalErrorModuleNotFound moduleName ->
+            "Internal: module " ++ moduleName ++ " not found"
+
+
+orderModulesHelp : String -> Dict String UnduplicatedFile -> OrderState -> OrderState
+orderModulesHelp currentModule modules state =
+    case Dict.get currentModule modules of
+        Just { imports } ->
+            let
+                new : OrderState
+                new =
+                    Dict.foldl
+                        (\importName _ acc ->
+                            if Set.member importName acc.visited then
+                                acc
+
+                            else
+                                orderModulesHelp importName modules acc
+                        )
+                        { state
+                            | visited =
+                                Set.insert currentModule state.visited
+                        }
+                        imports
+            in
+            { new | order = currentModule :: new.order }
+
+        Nothing ->
+            { state
+                | errors =
+                    InternalErrorModuleNotFound currentModule :: state.errors
+            }
 
 
 readAndParseFile : String -> BackendTask FatalError ParsedFile
