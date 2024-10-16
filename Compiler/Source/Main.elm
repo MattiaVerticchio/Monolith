@@ -12,18 +12,9 @@ import Pages.Script as Script exposing (Script)
 import Set exposing (Set)
 
 
-
-{-
-   Pipeline:
-       read the files
-        |> tokenize
-        |> parse + check for duplicated functions
-        |> check for cyclic imports
-        |> topological sort
-        |> type checking
-        |> conversion
-        |> emit files
--}
+extension : String
+extension =
+    ".🗿"
 
 
 run : Script
@@ -31,20 +22,15 @@ run =
     Script.withoutCliOptions compile
 
 
-extension : String
-extension =
-    ".🗿"
-
-
 compile : BackendTask FatalError ()
 compile =
     getContent srcDirectory
         |> Task.andThen keepMonolithFiles
         |> Task.andThen readFiles
-        |> Task.map tokenizeFiles
+        |> Task.map (List.map tokenizeFile)
         |> Task.andThen parseFiles
         |> Task.andThen duplicatesAndExports
-        -- |> Task.andThen checkCyclicImports
+        |> Task.andThen checkImportCycles
         -- |> Task.map topologicalSort
         -- |> Task.andThen typeCheck
         -- |> Task.map transformToJs
@@ -67,6 +53,13 @@ getContent folder =
         |> Task.allowFatal
 
 
+decodeDirent : Decoder Dirent
+decodeDirent =
+    Decode.map2 Dirent
+        (Decode.field "name" Decode.string)
+        (Decode.field "parentPath" Decode.string)
+
+
 
 -- Keep files that end with the proper extension
 
@@ -77,6 +70,9 @@ type alias Dirent =
     }
 
 
+keepMonolithFiles :
+    List Dirent
+    -> BackendTask FatalError (List { path : String, moduleName : String })
 keepMonolithFiles list =
     case keepMonolithFilesHelp list [] [] of
         Err files ->
@@ -93,6 +89,11 @@ keepMonolithFiles list =
             Task.succeed ok
 
 
+keepMonolithFilesHelp :
+    List Dirent
+    -> List String
+    -> List { path : String, moduleName : String }
+    -> Result (List String) (List { path : String, moduleName : String })
 keepMonolithFilesHelp remaining errors ok =
     case remaining of
         [] ->
@@ -144,33 +145,9 @@ toModuleName str =
 
 
 
--- List.filterMap <|
---     \dirent ->
---         if String.endsWith extension dirent.name then
---             Just dirent
---         else
---             Nothing
-
-
-decodeDirent : Decoder Dirent
-decodeDirent =
-    Decode.map2 Dirent
-        (Decode.field "name" Decode.string)
-        (Decode.field "parentPath" Decode.string)
-
-
-
 -- Read the files
 
 
-type alias RawFile =
-    { moduleName : String
-    , path : String
-    , content : String
-    }
-
-
-readFiles : List { path : String, moduleName : String } -> BackendTask FatalError (List RawFile)
 readFiles files =
     List.map
         (\file ->
@@ -186,256 +163,6 @@ readFiles files =
         files
         |> Task.combine
         |> Task.allowFatal
-
-
-
--- Tokenize the files
-
-
-type alias TokenizedFile =
-    { name : String
-    , tokens : List Token
-    }
-
-
-tokenizeFiles : List RawFile -> List TokenizedFile
-tokenizeFiles =
-    List.map <| \{ moduleName, content } -> { name = moduleName, tokens = tokenize content }
-
-
-
--- Parse the tokenized files
-
-
-type alias ParsedFile =
-    { name : String
-    , exports : Exports
-    , imports : Imports
-    , declarations :
-        -- The list is reversed
-        List Declaration
-    }
-
-
-parseFiles : List TokenizedFile -> BackendTask FatalError (List ParsedFile)
-parseFiles tokenized =
-    case
-        List.foldl
-            (\{ name, tokens } ( errors, ok ) ->
-                case parseFileResult name tokens of
-                    Err e ->
-                        ( e :: errors, ok )
-
-                    Ok parsed ->
-                        ( errors, parsed :: ok )
-            )
-            ( [], [] )
-            tokenized
-    of
-        ( [], parsed ) ->
-            Task.succeed parsed
-
-        ( errors, _ ) ->
-            String.join "\n" errors |> FatalError.fromString |> Task.fail
-
-
-
--- Check the parsed files for function duplicates and undeclared exports
-
-
-type alias UnduplicatedFile =
-    { name : String
-    , imports : Imports
-    , functions :
-        Dict
-            String
-            { expression : Expression
-            , start : Int
-            , isExposed : Bool
-            }
-    }
-
-
-duplicatesAndExports : List ParsedFile -> BackendTask FatalError (List UnduplicatedFile)
-duplicatesAndExports files =
-    case
-        List.foldl
-            (\file ( errors, result ) ->
-                case
-                    checkForDuplicatedDeclarations file.exports
-                        Dict.empty
-                        Dict.empty
-                        file.declarations
-                of
-                    Err duplicates ->
-                        ( { name = file.name
-                          , duplicates = duplicates
-                          }
-                            :: errors
-                        , result
-                        )
-
-                    Ok ok ->
-                        ( errors
-                        , { name = file.name
-                          , imports = file.imports
-                          , functions = ok
-                          }
-                            :: result
-                        )
-            )
-            ( [], [] )
-            files
-    of
-        ( [], result ) ->
-            Task.succeed result
-
-        ( errors, _ ) ->
-            duplicatesToErrorString errors
-                |> FatalError.fromString
-                |> Task.fail
-
-
-duplicatesToErrorString : List { name : String, duplicates : ( Dict String Int, Exports ) } -> String
-duplicatesToErrorString errors =
-    List.foldl
-        (\file mainAcc ->
-            let
-                ( duplicates, exports ) =
-                    file.duplicates
-
-                duplicatesError : String
-                duplicatesError =
-                    if Dict.isEmpty duplicates then
-                        ""
-
-                    else
-                        Dict.foldl (\k _ acc -> acc ++ "\n    " ++ k)
-                            "\n  Duplicated functions:"
-                            duplicates
-
-                exportsError : String
-                exportsError =
-                    if Set.isEmpty exports then
-                        ""
-
-                    else
-                        Set.foldl (\k acc -> acc ++ "\n    " ++ k)
-                            "\n  Undeclared exports:"
-                            exports
-            in
-            mainAcc
-                ++ "\n"
-                ++ file.name
-                ++ "has:"
-                ++ duplicatesError
-                ++ exportsError
-        )
-        ""
-        errors
-
-
-checkForDuplicatedDeclarations :
-    Exports
-    -> Dict String Int
-    ->
-        Dict
-            String
-            { expression : Expression
-            , start : Int
-            , isExposed : Bool
-            }
-    -> List Declaration
-    ->
-        Result
-            ( Dict String Int, Exports )
-            (Dict
-                String
-                { expression : Expression
-                , start : Int
-                , isExposed : Bool
-                }
-            )
-checkForDuplicatedDeclarations exports duplicates declarations remaining =
-    case remaining of
-        [] ->
-            if Dict.isEmpty duplicates && Set.isEmpty exports then
-                Ok declarations
-
-            else
-                Err ( duplicates, exports )
-
-        x :: xs ->
-            case Dict.get x.name declarations of
-                Nothing ->
-                    let
-                        newDeclarations :
-                            Dict
-                                String
-                                { expression : Expression
-                                , start : Int
-                                , isExposed : Bool
-                                }
-                        newDeclarations =
-                            Dict.insert x.name
-                                { expression = x.expression
-                                , start = x.start
-                                , isExposed = Set.member x.name exports
-                                }
-                                declarations
-                    in
-                    checkForDuplicatedDeclarations (Set.remove x.name exports)
-                        duplicates
-                        newDeclarations
-                        xs
-
-                Just _ ->
-                    let
-                        counter : Int
-                        counter =
-                            case Dict.get x.name duplicates of
-                                Nothing ->
-                                    2
-
-                                Just n ->
-                                    n + 1
-
-                        newDuplicates : Dict String Int
-                        newDuplicates =
-                            Dict.insert x.name counter duplicates
-                    in
-                    checkForDuplicatedDeclarations exports
-                        newDuplicates
-                        declarations
-                        xs
-
-
-readAndParseFile : String -> BackendTask FatalError ParsedFile
-readAndParseFile filePath =
-    let
-        name : String
-        name =
-            String.split "/" filePath
-                |> lastElement
-                |> Maybe.withDefault ""
-                |> String.dropRight (String.length extension)
-    in
-    File.rawFile filePath
-        |> Task.allowFatal
-        |> Task.andThen (tokenize >> parseFile name)
-
-
-lastElement : List a -> Maybe a
-lastElement list =
-    case list of
-        [] ->
-            Nothing
-
-        [ x ] ->
-            Just x
-
-        _ :: xs ->
-            lastElement xs
 
 
 
@@ -489,6 +216,25 @@ type Base
     | Base10
     | Base8
     | Base2
+
+
+tokenizeFile :
+    { moduleName : String
+    , path : String
+    , content : String
+    }
+    ->
+        { moduleName : String
+        , path : String
+        , tokens : List Token
+        , content : String
+        }
+tokenizeFile { moduleName, path, content } =
+    { moduleName = moduleName
+    , path = path
+    , tokens = tokenize content
+    , content = content
+    }
 
 
 tokenize : String -> List Token
@@ -684,6 +430,347 @@ t acc i src remaining =
                         String.slice i (i + length) src
                 in
                 stop i token acc
+
+
+
+-- Parse the tokenized files
+
+
+type alias ParsedFile =
+    { name : String
+    , exports : Exports
+    , imports : Imports
+    , declarations :
+        -- The list is reversed
+        List Declaration
+    }
+
+
+parseFiles : List { a | moduleName : String, tokens : List Token } -> BackendTask FatalError (List ParsedFile)
+parseFiles tokenized =
+    case
+        List.foldl
+            (\{ moduleName, tokens } ( errors, ok ) ->
+                case parseFileResult moduleName tokens of
+                    Err e ->
+                        ( e :: errors, ok )
+
+                    Ok parsed ->
+                        ( errors, parsed :: ok )
+            )
+            ( [], [] )
+            tokenized
+    of
+        ( [], parsed ) ->
+            Task.succeed parsed
+
+        ( errors, _ ) ->
+            String.join "\n" errors |> FatalError.fromString |> Task.fail
+
+
+
+-- Check the parsed files for function duplicates and undeclared exports
+
+
+type alias UnduplicatedFile =
+    { name : String
+    , imports : Imports
+    , functions :
+        Dict
+            String
+            { expression : Expression
+            , start : Int
+            , isExposed : Bool
+            }
+    }
+
+
+duplicatesAndExports : List ParsedFile -> BackendTask FatalError (List UnduplicatedFile)
+duplicatesAndExports files =
+    case
+        List.foldl
+            (\file ( errors, result ) ->
+                case
+                    checkForDuplicatedDeclarations file.exports
+                        Dict.empty
+                        Dict.empty
+                        file.declarations
+                of
+                    Err duplicates ->
+                        ( { name = file.name
+                          , duplicates = duplicates
+                          }
+                            :: errors
+                        , result
+                        )
+
+                    Ok ok ->
+                        ( errors
+                        , { name = file.name
+                          , imports = file.imports
+                          , functions = ok
+                          }
+                            :: result
+                        )
+            )
+            ( [], [] )
+            files
+    of
+        ( [], result ) ->
+            Task.succeed result
+
+        ( errors, _ ) ->
+            duplicatesToErrorString errors
+                |> FatalError.fromString
+                |> Task.fail
+
+
+duplicatesToErrorString : List { name : String, duplicates : ( Dict String Int, Exports ) } -> String
+duplicatesToErrorString errors =
+    List.foldl
+        (\file mainAcc ->
+            let
+                ( duplicates, exports ) =
+                    file.duplicates
+
+                duplicatesError : String
+                duplicatesError =
+                    if Dict.isEmpty duplicates then
+                        ""
+
+                    else
+                        Dict.foldl (\k _ acc -> acc ++ "\n    " ++ k)
+                            "\n  Duplicated functions:"
+                            duplicates
+
+                exportsError : String
+                exportsError =
+                    if Set.isEmpty exports then
+                        ""
+
+                    else
+                        Set.foldl (\k acc -> acc ++ "\n    " ++ k)
+                            "\n  Undeclared exports:"
+                            exports
+            in
+            mainAcc
+                ++ "\n"
+                ++ file.name
+                ++ " has:"
+                ++ duplicatesError
+                ++ exportsError
+        )
+        ""
+        errors
+
+
+checkForDuplicatedDeclarations :
+    Exports
+    -> Dict String Int
+    ->
+        Dict
+            String
+            { expression : Expression
+            , start : Int
+            , isExposed : Bool
+            }
+    -> List Declaration
+    ->
+        Result
+            ( Dict String Int, Exports )
+            (Dict
+                String
+                { expression : Expression
+                , start : Int
+                , isExposed : Bool
+                }
+            )
+checkForDuplicatedDeclarations exports duplicates declarations remaining =
+    case remaining of
+        [] ->
+            if Dict.isEmpty duplicates && Set.isEmpty exports then
+                Ok declarations
+
+            else
+                Err ( duplicates, exports )
+
+        x :: xs ->
+            case Dict.get x.name declarations of
+                Nothing ->
+                    let
+                        newDeclarations :
+                            Dict
+                                String
+                                { expression : Expression
+                                , start : Int
+                                , isExposed : Bool
+                                }
+                        newDeclarations =
+                            Dict.insert x.name
+                                { expression = x.expression
+                                , start = x.start
+                                , isExposed = Set.member x.name exports
+                                }
+                                declarations
+                    in
+                    checkForDuplicatedDeclarations (Set.remove x.name exports)
+                        duplicates
+                        newDeclarations
+                        xs
+
+                Just _ ->
+                    let
+                        counter : Int
+                        counter =
+                            case Dict.get x.name duplicates of
+                                Nothing ->
+                                    2
+
+                                Just n ->
+                                    n + 1
+
+                        newDuplicates : Dict String Int
+                        newDuplicates =
+                            Dict.insert x.name counter duplicates
+                    in
+                    checkForDuplicatedDeclarations exports
+                        newDuplicates
+                        declarations
+                        xs
+
+
+
+-- Checking import cycles
+
+
+checkImportCycles :
+    List UnduplicatedFile
+    -> BackendTask FatalError (Dict String UnduplicatedFile)
+checkImportCycles files =
+    let
+        dictionary : Dict String UnduplicatedFile
+        dictionary =
+            List.foldl (\file -> Dict.insert file.name file) Dict.empty files
+    in
+    case checkCycles "Main" Set.empty "" dictionary [] of
+        Nothing ->
+            Task.succeed dictionary
+
+        Just error ->
+            importCycleErrorToString error |> FatalError.fromString |> Task.fail
+
+
+type ImportCycleError
+    = ModuleCycle (List String)
+    | ImportedModuleNotFound String String
+    | ImportingUndeclaredFunction { functionName : String }
+    | ImportingUnexposedFunction { functionName : String }
+
+
+checkCycles : String -> Set String -> String -> Dict String UnduplicatedFile -> List String -> Maybe ImportCycleError
+checkCycles this functionsToCheck old modules visited =
+    case Dict.get this modules of
+        Just { imports, functions } ->
+            if List.member this visited then
+                ModuleCycle visited |> Just
+
+            else
+                case
+                    Set.foldr
+                        (\f acc ->
+                            case acc of
+                                Just error ->
+                                    Just error
+
+                                Nothing ->
+                                    case Dict.get f functions of
+                                        Just found ->
+                                            if found.isExposed then
+                                                Nothing
+
+                                            else
+                                                ImportingUnexposedFunction
+                                                    { functionName = f }
+                                                    |> Just
+
+                                        Nothing ->
+                                            ImportingUndeclaredFunction
+                                                { functionName = f }
+                                                |> Just
+                        )
+                        Nothing
+                        functionsToCheck
+                of
+                    Just error ->
+                        Just error
+
+                    Nothing ->
+                        Dict.foldl
+                            (\importName newFunctions acc ->
+                                case acc of
+                                    Just error ->
+                                        Just error
+
+                                    Nothing ->
+                                        checkCycles importName
+                                            newFunctions
+                                            this
+                                            modules
+                                            (this :: visited)
+                            )
+                            Nothing
+                            imports
+
+        Nothing ->
+            ImportedModuleNotFound this old |> Just
+
+
+importCycleErrorToString : ImportCycleError -> String
+importCycleErrorToString error =
+    case error of
+        ModuleCycle cycle ->
+            "Cycle detected: " ++ String.join ", " cycle
+
+        ImportedModuleNotFound importedModule inModule ->
+            "You are importing "
+                ++ importedModule
+                ++ " in "
+                ++ inModule
+                ++ ", but it doesn’t exist."
+
+        ImportingUndeclaredFunction { functionName } ->
+            "You are importing " ++ functionName ++ " but it’s not declared."
+
+        ImportingUnexposedFunction { functionName } ->
+            "You are importing " ++ functionName ++ " but it’s not exposed."
+
+
+readAndParseFile : String -> BackendTask FatalError ParsedFile
+readAndParseFile filePath =
+    let
+        name : String
+        name =
+            String.split "/" filePath
+                |> lastElement
+                |> Maybe.withDefault ""
+                |> String.dropRight (String.length extension)
+    in
+    File.rawFile filePath
+        |> Task.allowFatal
+        |> Task.andThen (tokenize >> parseFile name)
+
+
+lastElement : List a -> Maybe a
+lastElement list =
+    case list of
+        [] ->
+            Nothing
+
+        [ x ] ->
+            Just x
+
+        _ :: xs ->
+            lastElement xs
 
 
 parseScientificNumber : String -> Maybe ScientificNumber
@@ -1399,92 +1486,6 @@ operatorInfo operator =
 
 
 
--- Checking import cycles
-{-
-
-   checkImportCycles : List File -> BackendTask FatalError (List File)
-   checkImportCycles files =
-       let
-           dictionary : Dict comparable File
-           dictionary =
-               List.foldl (\file -> Dict.insert file.name file) Dict.empty files
-       in
-       case checkCycles "Main" (Set.singleton "main") "Main" dictionary [] of
-           Nothing ->
-               Debug.todo ""
-
-           Just error ->
-               Debug.todo "branch 'Just _' not implemented"
-
-
-   type ImportCycleError
-       = ModuleCycle String
-       | ImportedModuleNotFound String String
-
-
-   checkCycles : String -> Set String -> String -> Dict String File -> List String -> Maybe ImportCycleError
-   checkCycles this functionsToCheck old modules visited =
-       case Dict.get this modules of
-           Just { imports, functions } ->
-               if List.member this visited then
-                   ModuleCycle visited |> Just
-
-               else
-                   case
-                       Set.foldr
-                           (\f acc ->
-                               case acc of
-                                   Just error ->
-                                       Just error
-
-                                   Nothing ->
-                                       case Dict.get f functions of
-                                           Just (UncheckedFunction _ Public _) ->
-                                               Nothing
-
-                                           Just (UncheckedFunction _ Private _) ->
-                                               ImportingUnexposedFunction f this old
-                                                   |> Just
-
-                                           Just (ExposedFrom _) ->
-                                               ImportingUndeclaredFunction f this old
-                                                   |> Just
-
-                                           Just (CheckedFunction _ _ _) ->
-                                               InternalErrorFoundAlreadyTyped f
-                                                   |> Just
-
-                                           Nothing ->
-                                               ImportingUndeclaredFunction f this old
-                                                   |> Just
-                           )
-                           Nothing
-                           functionsToCheck
-                   of
-                       Just error ->
-                           Just error
-
-                       Nothing ->
-                           Dict.foldl
-                               (\importName newFunctions acc ->
-                                   case acc of
-                                       Just error ->
-                                           Just error
-
-                                       Nothing ->
-                                           checkCycles importName
-                                               newFunctions
-                                               this
-                                               modules
-                                               (this :: visited)
-                               )
-                               Nothing
-                               imports
-
-           Nothing ->
-               ImportedModuleNotFound this old |> Just
-
--}
 -- Rendering
 
 
