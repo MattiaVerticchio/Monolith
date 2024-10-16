@@ -38,8 +38,8 @@ extension =
 
 compile : BackendTask FatalError ()
 compile =
-    getContent path
-        |> Task.map keepMonolithFiles
+    getContent srcDirectory
+        |> Task.andThen keepMonolithFiles
         |> Task.andThen readFiles
         |> Task.map tokenizeFiles
         |> Task.andThen parseFiles
@@ -56,8 +56,8 @@ compile =
 -- Get the content of the source directory
 
 
-path : String
-path =
+srcDirectory : String
+srcDirectory =
     "src"
 
 
@@ -77,15 +77,79 @@ type alias Dirent =
     }
 
 
-keepMonolithFiles : List Dirent -> List Dirent
-keepMonolithFiles =
-    List.filterMap <|
-        \dirent ->
-            if String.endsWith extension dirent.name then
-                Just dirent
+keepMonolithFiles list =
+    case keepMonolithFilesHelp list [] [] of
+        Err files ->
+            List.foldl
+                (\el acc ->
+                    acc ++ "\n" ++ el
+                )
+                "The module names must be alphanumeric characters and start with a capital letter, but I found:"
+                files
+                |> FatalError.fromString
+                |> Task.fail
+
+        Ok ok ->
+            Task.succeed ok
+
+
+keepMonolithFilesHelp remaining errors ok =
+    case remaining of
+        [] ->
+            if errors == [] then
+                Ok ok
 
             else
-                Nothing
+                Err errors
+
+        { name, parentPath } :: rest ->
+            let
+                path : String
+                path =
+                    parentPath ++ "/" ++ name
+            in
+            case toModuleName name of
+                Just moduleName ->
+                    keepMonolithFilesHelp rest
+                        errors
+                        ({ path = path, moduleName = moduleName } :: ok)
+
+                Nothing ->
+                    keepMonolithFilesHelp rest (path :: errors) ok
+
+
+toModuleName : String -> Maybe String
+toModuleName str =
+    let
+        dropped : String
+        dropped =
+            String.dropRight (String.length extension) str
+    in
+    if
+        String.split "/" dropped
+            |> List.all
+                (\chunk ->
+                    case String.uncons chunk of
+                        Just ( x, xs ) ->
+                            Char.isUpper x && String.all Char.isAlphaNum xs
+
+                        Nothing ->
+                            False
+                )
+    then
+        String.replace "/" "." dropped |> Just
+
+    else
+        Nothing
+
+
+
+-- List.filterMap <|
+--     \dirent ->
+--         if String.endsWith extension dirent.name then
+--             Just dirent
+--         else
+--             Nothing
 
 
 decodeDirent : Decoder Dirent
@@ -100,21 +164,21 @@ decodeDirent =
 
 
 type alias RawFile =
-    { name : String
+    { moduleName : String
+    , path : String
     , content : String
     }
 
 
-readFiles : List Dirent -> BackendTask FatalError (List RawFile)
+readFiles : List { path : String, moduleName : String } -> BackendTask FatalError (List RawFile)
 readFiles files =
     List.map
         (\file ->
-            File.rawFile (file.parentPath ++ "/" ++ file.name)
+            File.rawFile file.path
                 |> Task.map
                     (\content ->
-                        { name =
-                            String.dropRight (String.length extension)
-                                file.name
+                        { moduleName = file.moduleName
+                        , path = file.path
                         , content = content
                         }
                     )
@@ -136,7 +200,7 @@ type alias TokenizedFile =
 
 tokenizeFiles : List RawFile -> List TokenizedFile
 tokenizeFiles =
-    List.map <| \{ name, content } -> { name = name, tokens = tokenize content }
+    List.map <| \{ moduleName, content } -> { name = moduleName, tokens = tokenize content }
 
 
 
